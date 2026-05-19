@@ -11,4 +11,4 @@ git push mio-repo main
 # (opzionale) Ribase le tue modifiche sopra il nuovo main
 git checkout modifiche
 git rebase main
-git push mio-repo modifiche --force-with-lease
+git push mio-repo modifiche --force-with-lease 
