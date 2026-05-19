@@ -3,6 +3,7 @@
 #include "include/shaiya/CCharacter.h"
 #include "include/shaiya/CStaticText.h"
 #include "include/shaiya/CTexture.h"
+#include "include/shaiya/CWorldMgr.h"
 #include "include/shaiya/Static.h"
 using namespace shaiya;
 
@@ -26,6 +27,8 @@ namespace character
             Static::operator_delete(user->title.text);
             user->title.text = nullptr;
         }
+
+        name_color::remove_char_enchant_eft_tracking(user);
     }
 }
 

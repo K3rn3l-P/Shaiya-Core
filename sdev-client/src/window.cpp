@@ -162,6 +162,13 @@ namespace window
             return 0;
         }
 
+        if (msg == kClientGMCommandWindowMessage)
+        {
+            auto command = reinterpret_cast<const char*>(lParam);
+            append_utf8_textbox_text(&g_var->input.textBox, command);
+            return 0;
+        }
+
         if (g_hwndIsUnicode)
             return CallWindowProcW(g_originalGameWndProc, hwnd, msg, wParam, lParam);
 

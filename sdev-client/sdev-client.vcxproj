@@ -243,7 +243,7 @@
       <LanguageStandard>stdcpplatest</LanguageStandard>
       <LanguageStandard_C>stdclatest</LanguageStandard_C>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
-      <AdditionalIncludeDirectories>$(DXSDK_DIR)Include;$(SolutionDir);$(ProjectDir);$(SolutionDir)external\imgui;$(SolutionDir)external\imgui\backends;$(SolutionDir)external\discord-rpc\include;$(SolutionDir)external\discord-rpc\src;</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>C:\Program Files (x86)\Microsoft DirectX SDK (June 2010)\Include;$(SolutionDir);$(ProjectDir);$(SolutionDir)external\imgui;$(SolutionDir)external\imgui\backends;$(SolutionDir)external\discord-rpc\include;$(SolutionDir)external\discord-rpc\src;</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>

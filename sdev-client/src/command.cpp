@@ -1,5 +1,7 @@
 #include <ranges>
 #include <atomic>
+#include <cctype>
+#include <charconv>
 #include <string>
 #include <thread>
 #include <vector>
@@ -8,7 +10,10 @@
 #include <commdlg.h>
 #include <util/util.h>
 #include "include/main.h"
+#include "include/shaiya/CCharacter.h"
+#include "include/shaiya/CEffectData.h"
 #include "include/shaiya/Static.h"
+#include "include/shaiya/CWorldMgr.h"
 using namespace shaiya;
 
 namespace
@@ -18,10 +23,25 @@ namespace
     constexpr const char* kFontWeightKey = "WEIGHT";
     constexpr const char* kFontItalicKey = "ITALIC";
     constexpr const char* kFontFaceNameKey = "FACENAME";
+    constexpr int kCustomEftEffectDataId = 299;
+    constexpr int kCustomEftEffectSubId = 1;
+    constexpr DWORD kDefaultCustomEftLoopIntervalMs = 1200;
+    constexpr DWORD kMinCustomEftLoopIntervalMs = 100;
+    constexpr DWORD kMaxCustomEftLoopIntervalMs = 10000;
+    constexpr const char* kEffectFolders[] = {
+        "data/effect",
+        "Data\\Effect",
+        "effect",
+        "Effect"
+    };
     constexpr int kDefaultFontHeight = 13;
     constexpr const char* kDefaultFontFaceName = "Arial";
 
     inline std::atomic_bool g_chooseFontWorkerBusy = false;
+    inline std::atomic_bool g_customEftLoopEnabled = false;
+    inline std::atomic<DWORD> g_customEftLoopIntervalMs = kDefaultCustomEftLoopIntervalMs;
+    inline std::atomic<DWORD> g_customEftLoopNextTick = 0;
+    inline std::string g_customEftName;
 
     HRESULT create_d3dx_font(
         LPDIRECT3DDEVICE9 device,
@@ -200,6 +220,8 @@ namespace
         g_showEffects = enabled;
         g_showMobEffects = enabled;
         WritePrivateProfileStringA("ADVANCED", "EFFECTS", enabled ? "TRUE" : "FALSE", g_var->iniFileName.data());
+        if (!enabled)
+            name_color::disable_enchant_eft();
     }
 
     void apply_pets_setting(bool enabled)
@@ -232,6 +254,195 @@ namespace
         g_showNameColors = enabled;
         WritePrivateProfileStringA("ADVANCED", "COLOUR", enabled ? "TRUE" : "FALSE", g_var->iniFileName.data());
     }
+
+    void write_command_message(const std::string& text)
+    {
+        Static::DrawText_ChatBox(ChatType::Notice26, text.c_str(), 0);
+    }
+
+    bool contains_path_separator_or_parent_ref(const std::string& value)
+    {
+        return value.find('\\') != std::string::npos
+            || value.find('/') != std::string::npos
+            || value.find("..") != std::string::npos;
+    }
+
+    std::string normalize_eft_name(const std::string& rawName)
+    {
+        auto name = rawName;
+        if (name.size() >= 4)
+        {
+            auto ext = name.substr(name.size() - 4);
+            for (auto& ch : ext)
+                ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+
+            if (ext == ".eft")
+                name.resize(name.size() - 4);
+        }
+
+        return name;
+    }
+
+    bool try_parse_loop_interval(const std::string& text, DWORD& outIntervalMs)
+    {
+        unsigned value = 0;
+        auto begin = text.data();
+        auto end = text.data() + text.size();
+        auto result = std::from_chars(begin, end, value);
+        if (result.ec != std::errc{} || result.ptr != end)
+            return false;
+
+        if (value < kMinCustomEftLoopIntervalMs)
+            value = kMinCustomEftLoopIntervalMs;
+        else if (value > kMaxCustomEftLoopIntervalMs)
+            value = kMaxCustomEftLoopIntervalMs;
+
+        outIntervalMs = value;
+        return true;
+    }
+
+    void remove_custom_eft()
+    {
+        auto user = g_pWorldMgr->user;
+        if (!user)
+            return;
+
+        CCharacter::RemoveEffect(user, kCustomEftEffectDataId, kCustomEftEffectSubId);
+    }
+
+    bool render_custom_eft()
+    {
+        auto user = g_pWorldMgr->user;
+        if (!user)
+            return false;
+
+        remove_custom_eft();
+        CCharacter::RenderEffect(
+            user,
+            kCustomEftEffectDataId,
+            kCustomEftEffectSubId,
+            0.0f,
+            &user->pos,
+            &user->dir,
+            &user->up,
+            0);
+        return true;
+    }
+
+    void stop_custom_eft_loop()
+    {
+        g_customEftLoopEnabled.store(false);
+        g_customEftLoopNextTick.store(0);
+    }
+
+    void start_custom_eft_loop(DWORD intervalMs)
+    {
+        g_customEftLoopIntervalMs.store(intervalMs);
+        g_customEftLoopEnabled.store(true);
+        g_customEftLoopNextTick.store(GetTickCount() + intervalMs);
+    }
+
+    void update_custom_eft_loop()
+    {
+        if (!g_customEftLoopEnabled.load())
+            return;
+
+        auto nextTick = g_customEftLoopNextTick.load();
+        auto now = GetTickCount();
+        if (static_cast<int32_t>(now - nextTick) < 0)
+            return;
+
+        if (render_custom_eft())
+            g_customEftLoopNextTick.store(now + g_customEftLoopIntervalMs.load());
+    }
+
+    bool play_custom_eft(const std::string& rawName, bool loop, DWORD loopIntervalMs)
+    {
+        auto user = g_pWorldMgr->user;
+        if (!user)
+        {
+            write_command_message("[eft] Character is not ready yet.");
+            return false;
+        }
+
+        auto name = normalize_eft_name(rawName);
+        if (name.empty())
+        {
+            write_command_message("[eft] Usage: /eft <fileName> [loop [ms]] or /eft off");
+            return false;
+        }
+
+        if (contains_path_separator_or_parent_ref(name))
+        {
+            write_command_message("[eft] Only plain file names are allowed.");
+            return false;
+        }
+
+        auto fileName = name + ".eft";
+        stop_custom_eft_loop();
+        remove_custom_eft();
+
+        const char* loadedFrom = nullptr;
+        for (auto path : kEffectFolders)
+        {
+            if (CEffectData::CreateFromFile(&g_var->effectData299, path, fileName.c_str()))
+            {
+                loadedFrom = path;
+                break;
+            }
+        }
+
+        if (!loadedFrom)
+        {
+            g_customEftName.clear();
+            write_command_message("[eft] Failed to load: " + fileName);
+            return false;
+        }
+
+        g_customEftName = fileName;
+        render_custom_eft();
+
+        if (loop)
+        {
+            start_custom_eft_loop(loopIntervalMs);
+            write_command_message("[eft] Loaded loop: " + fileName + " from " + loadedFrom + " (" + std::to_string(loopIntervalMs) + " ms)");
+        }
+        else
+        {
+            write_command_message("[eft] Loaded: " + fileName + " from " + loadedFrom);
+        }
+        return true;
+    }
+}
+
+bool play_custom_eft_from_ui(const char* fileName, bool loop, unsigned loopIntervalMs)
+{
+    if (!fileName)
+        return false;
+
+    return play_custom_eft(fileName, loop, loopIntervalMs);
+}
+
+void stop_custom_eft_from_ui()
+{
+    stop_custom_eft_loop();
+    remove_custom_eft();
+    g_customEftName.clear();
+}
+
+bool is_custom_eft_loop_enabled_from_ui()
+{
+    return g_customEftLoopEnabled.load();
+}
+
+unsigned get_custom_eft_loop_interval_from_ui()
+{
+    return g_customEftLoopIntervalMs.load();
+}
+
+const char* get_custom_eft_name_from_ui()
+{
+    return g_customEftName.c_str();
 }
 
 void load_advanced_config()
@@ -314,6 +525,53 @@ int command_handler(char* text)
     if (input == "/pets off")
     {
         apply_pets_setting(false);
+        return 0;
+    }
+
+    if (argv[0] == "/eft")
+    {
+        if (argc < 2)
+        {
+            write_command_message("[eft] Usage: /eft <fileName> [loop [ms]] or /eft off");
+            return 0;
+        }
+
+        if (argv[1] == "off")
+        {
+            stop_custom_eft_loop();
+            remove_custom_eft();
+            g_customEftName.clear();
+            write_command_message("[eft] Removed custom effect.");
+            return 0;
+        }
+
+        if (argv[1] == "on")
+        {
+            write_command_message("[eft] Usage: /eft <fileName> [loop [ms]] or /eft off");
+            return 0;
+        }
+
+        auto loop = false;
+        auto loopIntervalMs = kDefaultCustomEftLoopIntervalMs;
+
+        if (argc >= 3)
+        {
+            if (argv[2] != "loop")
+            {
+                write_command_message("[eft] Usage: /eft <fileName> [loop [ms]] or /eft off");
+                return 0;
+            }
+
+            loop = true;
+
+            if (argc >= 4 && !try_parse_loop_interval(argv[3], loopIntervalMs))
+            {
+                write_command_message("[eft] Loop ms must be a number between 100 and 10000.");
+                return 0;
+            }
+        }
+
+        play_custom_eft(argv[1], loop, loopIntervalMs);
         return 0;
     }
 
@@ -592,6 +850,10 @@ void __declspec(naked) naked_0x580D30()
 {
     __asm
     {
+        pushad
+        call update_custom_eft_loop
+        popad
+
         cmp dword ptr [g_fpsBoost], 1
         jne disabled
 

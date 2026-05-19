@@ -19,6 +19,7 @@ inline constexpr unsigned kClientSysMsgWindowMessage = 0x8000 + 0x4A2;
 inline constexpr unsigned kClientRouletteListWindowMessage = 0x8000 + 0x4A4;
 inline constexpr unsigned kClientRouletteRollWindowMessage = 0x8000 + 0x4A3;
 inline constexpr unsigned kClientEmojiTokenWindowMessage = 0x8000 + 0x4A5;
+inline constexpr unsigned kClientGMCommandWindowMessage = 0x8000 + 0x4A6;
 void queue_client_sysmsg(int chatType, int messageNumber);
 void flush_client_sysmsg_queue();
 void tick_client_welcome_sysmsg();
@@ -29,6 +30,11 @@ bool append_utf8_textbox_wchar(void* textBox, wchar_t wideChar);
 bool append_utf8_textbox_text(void* textBox, const char* utf8);
 bool backspace_utf8_textbox_char(void* textBox);
 bool handle_imgui_layer_wnd_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam, LRESULT& result);
+bool play_custom_eft_from_ui(const char* fileName, bool loop, unsigned loopIntervalMs);
+void stop_custom_eft_from_ui();
+bool is_custom_eft_loop_enabled_from_ui();
+unsigned get_custom_eft_loop_interval_from_ui();
+const char* get_custom_eft_name_from_ui();
 
 namespace hook
 {
@@ -60,6 +66,13 @@ namespace hook
     void vehicle();
     void weapon_step();
     void window();
+}
+
+namespace name_color
+{
+    void reset_helmet_eft_state();
+    void disable_enchant_eft();
+    void remove_char_enchant_eft_tracking(void* user);
 }
 
 inline int g_showCostumes = false;

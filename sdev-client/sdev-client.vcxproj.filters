@@ -206,6 +206,54 @@
     <ClInclude Include="include\shaiya\Vehicle.h">
       <Filter>include\shaiya</Filter>
     </ClInclude>
+    <ClInclude Include="src\include\config.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="src\include\debug_panel.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="src\include\ep4_ui.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="src\include\stat_color.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="src\include\interface_redirect.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="src\include\server_selection.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="..\external\discord-rpc\include\discord_register.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="..\external\discord-rpc\include\discord_rpc.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="..\external\imgui\imgui.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="..\external\imgui\imgui_internal.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="..\external\imgui\imconfig.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="..\external\imgui\imstb_rectpack.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="..\external\imgui\imstb_textedit.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="..\external\imgui\imstb_truetype.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="..\external\imgui\backends\imgui_impl_dx9.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="..\external\imgui\backends\imgui_impl_win32.h">
+      <Filter>include</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\dllmain.cpp">
@@ -332,6 +380,69 @@
       <Filter>src</Filter>
     </ClCompile>
     <ClCompile Include="src\blacksmith.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="..\external\discord-rpc\src\connection_win.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="..\external\discord-rpc\src\discord_register_win.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="..\external\discord-rpc\src\discord_rpc.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="..\external\discord-rpc\src\rpc_connection.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="..\external\discord-rpc\src\serialization.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="..\external\imgui\imgui.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="..\external\imgui\imgui_draw.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="..\external\imgui\imgui_tables.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="..\external\imgui\imgui_widgets.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="..\external\imgui\backends\imgui_impl_dx9.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="..\external\imgui\backends\imgui_impl_win32.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\config.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\discord.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\ep4_ui.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\stat_color.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\ep6_repo_features.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\imgui_layer.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\interface_redirect.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\server_selection.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\debug_panel.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\stb_image_impl.cpp">
       <Filter>src</Filter>
     </ClCompile>
   </ItemGroup>
