@@ -1,9 +1,10 @@
 # Per aggiornare il main quando lo sviluppatore ufficiale fa nuovi commit:
 
 # Scarica gli aggiornamenti ufficiali
-git fetch origin
+git fetch upstream
 git checkout main
-git merge origin/main
+git merge upstream/main
+git push origin main
 
 # Pusha il main aggiornato sul tuo repo privato
 git push mio-repo main
