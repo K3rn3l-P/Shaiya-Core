@@ -500,6 +500,8 @@ namespace debug_panel
         int type;
         int typeId;
         int itemId;
+        int level;
+        int grade;
         std::string name;
         std::string lowerName;
     };
@@ -521,26 +523,56 @@ namespace debug_panel
     static bool g_filterWings = false;
     static bool g_filterCostumes = false;
 
-    static bool is_armor_type(int type)
+    static int g_factionFilter = 0;
+    static int g_minLevel = 0;
+    static int g_maxLevel = 80;
+    static bool g_enableLevelFilter = false;
+    static bool g_hideUnnamedItems = true;
+    static std::array<char, 7> g_gradeFilter{};
+    static bool g_enableGradeFilter = false;
+
+    static bool is_light_armor_type(int type)
     {
         return type == 16 || type == 17 || type == 18 || type == 20 || type == 21
-            || type == 31 || type == 32 || type == 33 || type == 35 || type == 36
             || type == 67 || type == 68 || type == 70 || type == 71 || type == 72
-            || type == 73 || type == 74 || type == 76 || type == 77
+            || type == 73 || type == 74 || type == 76 || type == 77;
+    }
+
+    static bool is_fury_armor_type(int type)
+    {
+        return type == 31 || type == 32 || type == 33 || type == 35 || type == 36
             || type == 82 || type == 83 || type == 85 || type == 86 || type == 87
             || type == 88 || type == 89 || type == 91 || type == 92;
     }
 
+    static bool is_armor_type(int type)
+    {
+        return is_light_armor_type(type) || is_fury_armor_type(type);
+    }
+
+    static bool is_light_weapon_type(int type)
+    {
+        return type == 1 || type == 2 || type == 5 || type == 6 || type == 7
+            || type == 8 || type == 9 || type == 10 || type == 12 || type == 13
+            || type == 14 || type == 15 || type == 19 || type == 45 || type == 46
+            || type == 49 || type == 51 || type == 53 || type == 55 || type == 57
+            || type == 58 || type == 60 || type == 62 || type == 64 || type == 65
+            || type == 69;
+    }
+
+    static bool is_fury_weapon_type(int type)
+    {
+        return type == 3 || type == 4 || type == 5 || type == 6 || type == 7
+            || type == 8 || type == 9 || type == 10 || type == 11 || type == 12
+            || type == 13 || type == 15 || type == 34 || type == 47 || type == 48
+            || type == 50 || type == 52 || type == 54 || type == 56 || type == 57
+            || type == 58 || type == 59 || type == 61 || type == 63 || type == 65
+            || type == 84;
+    }
+
     static bool is_weapon_type(int type)
     {
-        return type == 1 || type == 2 || type == 3 || type == 4 || type == 5
-            || type == 6 || type == 7 || type == 8 || type == 9 || type == 10
-            || type == 11 || type == 12 || type == 13 || type == 14 || type == 15
-            || type == 19 || type == 34 || type == 45 || type == 46 || type == 47
-            || type == 48 || type == 49 || type == 50 || type == 51 || type == 52
-            || type == 53 || type == 54 || type == 55 || type == 56 || type == 57
-            || type == 58 || type == 59 || type == 60 || type == 61 || type == 62
-            || type == 63 || type == 64 || type == 65 || type == 69 || type == 84;
+        return is_light_weapon_type(type) || is_fury_weapon_type(type);
     }
 
     static bool is_accessory_type(int type)
@@ -621,6 +653,8 @@ namespace debug_panel
                     type,
                     typeId,
                     type * 1000 + typeId,
+                    static_cast<int>(itemInfo->level),
+                    static_cast<int>(itemInfo->dropGrade),
                     name,
                     to_lower_ascii(name)
                 });
@@ -651,6 +685,52 @@ namespace debug_panel
             return true;
 
         return std::to_string(entry.typeId).find(lowerSearch) != std::string::npos;
+    }
+
+    static bool item_matches_faction_filter(const ItemSearchEntry& entry)
+    {
+        if (g_factionFilter == 0)
+            return true;
+
+        bool isLight = is_light_armor_type(entry.type) || is_light_weapon_type(entry.type);
+        bool isFury = is_fury_armor_type(entry.type) || is_fury_weapon_type(entry.type);
+
+        if (g_factionFilter == 1)
+            return isLight;
+        if (g_factionFilter == 2)
+            return isFury;
+
+        return !isLight && !isFury;
+    }
+
+    static bool item_matches_level_filter(const ItemSearchEntry& entry)
+    {
+        if (!g_enableLevelFilter)
+            return true;
+
+        return entry.level >= g_minLevel && entry.level <= g_maxLevel;
+    }
+
+    static bool item_matches_unnamed_filter(const ItemSearchEntry& entry)
+    {
+        if (!g_hideUnnamedItems)
+            return true;
+
+        return entry.name.find("???") == std::string::npos;
+    }
+
+    static bool item_matches_grade_filter(const ItemSearchEntry& entry)
+    {
+        if (!g_enableGradeFilter || g_gradeFilter[0] == '\0')
+            return true;
+
+        try {
+            int filterGrade = std::stoi(g_gradeFilter.data());
+            return entry.grade == filterGrade;
+        }
+        catch (...) {
+            return true;
+        }
     }
 
     static bool item_matches_category_filter(const ItemSearchEntry& entry)
@@ -690,37 +770,96 @@ namespace debug_panel
     {
         ensure_item_catalog_loaded();
 
-        if (ImGui::SmallButton("Rebuild##item_search"))
+        ImGui::InputTextWithHint("##item_search_input", "Search by ItemID / Name / type / typeId...", g_itemSearch.data(), g_itemSearch.size());
+        ImGui::SameLine();
+        ImGui::Checkbox("Hide Unnamed (???)##unnamed", &g_hideUnnamedItems);
+
+        if (ImGui::CollapsingHeader("Advanced Filters"))
         {
-            g_itemCatalogLoaded = false;
-            ensure_item_catalog_loaded();
+            ImGui::Indent();
+
+            ImGui::TextDisabled("Faction Filter:");
+            ImGui::RadioButton("Both##faction", &g_factionFilter, 0);
+            ImGui::SameLine();
+            ImGui::RadioButton("Light##faction", &g_factionFilter, 1);
+            ImGui::SameLine();
+            ImGui::RadioButton("Fury##faction", &g_factionFilter, 2);
+
+            ImGui::Separator();
+            ImGui::Checkbox("Enable Level Filter", &g_enableLevelFilter);
+            if (g_enableLevelFilter)
+            {
+                ImGui::SetNextItemWidth(80.0f);
+                ImGui::InputInt("Min##level", &g_minLevel, 1, 10);
+                g_minLevel = std::clamp(g_minLevel, 0, 80);
+                ImGui::SameLine();
+                ImGui::SetNextItemWidth(80.0f);
+                ImGui::InputInt("Max##level", &g_maxLevel, 1, 10);
+                g_maxLevel = std::clamp(g_maxLevel, 0, 80);
+                if (g_minLevel > g_maxLevel)
+                    g_minLevel = g_maxLevel;
+            }
+
+            ImGui::Separator();
+            ImGui::Checkbox("Enable Grade Filter", &g_enableGradeFilter);
+            if (g_enableGradeFilter)
+            {
+                ImGui::SameLine();
+                ImGui::SetNextItemWidth(100.0f);
+                ImGui::InputText("##grade_input", g_gradeFilter.data(), g_gradeFilter.size(), ImGuiInputTextFlags_CharsDecimal);
+            }
+
+            ImGui::Separator();
+            ImGui::TextDisabled("Category Filters:");
+            ImGui::Checkbox("Armor", &g_filterArmor);
+            ImGui::SameLine();
+            ImGui::Checkbox("Weapons", &g_filterWeapons);
+            ImGui::SameLine();
+            ImGui::Checkbox("Accessories", &g_filterAccessories);
+            ImGui::SameLine();
+            ImGui::Checkbox("Lapis", &g_filterLapis);
+            ImGui::SameLine();
+            ImGui::Checkbox("Capes", &g_filterCapes);
+
+            ImGui::Checkbox("Mounts", &g_filterMounts);
+            ImGui::SameLine();
+            ImGui::Checkbox("Consumables", &g_filterConsumables);
+            ImGui::SameLine();
+            ImGui::Checkbox("Pets", &g_filterPets);
+            ImGui::SameLine();
+            ImGui::Checkbox("Wings", &g_filterWings);
+            ImGui::SameLine();
+            ImGui::Checkbox("Costumes", &g_filterCostumes);
+
+            ImGui::Unindent();
         }
 
-        ImGui::InputTextWithHint("##item_search_input", "Search by ItemID / Name / type / typeId...", g_itemSearch.data(), g_itemSearch.size());
+        auto search = to_lower_ascii(g_itemSearch.data());
+        std::vector<int> filteredIndices;
+        filteredIndices.reserve(g_itemEntries.size());
 
-        ImGui::Separator();
-        ImGui::TextDisabled("Category Filters:");
-        ImGui::Checkbox("Armor", &g_filterArmor);
-        ImGui::SameLine();
-        ImGui::Checkbox("Weapons", &g_filterWeapons);
-        ImGui::SameLine();
-        ImGui::Checkbox("Accessories", &g_filterAccessories);
-        ImGui::SameLine();
-        ImGui::Checkbox("Lapis", &g_filterLapis);
-        ImGui::SameLine();
-        ImGui::Checkbox("Capes", &g_filterCapes);
+        for (int i = 0; i < static_cast<int>(g_itemEntries.size()); ++i)
+        {
+            if (item_matches_search(g_itemEntries[i], search)
+                && item_matches_category_filter(g_itemEntries[i])
+                && item_matches_faction_filter(g_itemEntries[i])
+                && item_matches_level_filter(g_itemEntries[i])
+                && item_matches_unnamed_filter(g_itemEntries[i])
+                && item_matches_grade_filter(g_itemEntries[i]))
+            {
+                filteredIndices.push_back(i);
+            }
+        }
 
-        ImGui::Checkbox("Mounts", &g_filterMounts);
-        ImGui::SameLine();
-        ImGui::Checkbox("Consumables", &g_filterConsumables);
-        ImGui::SameLine();
-        ImGui::Checkbox("Pets", &g_filterPets);
-        ImGui::SameLine();
-        ImGui::Checkbox("Wings", &g_filterWings);
-        ImGui::SameLine();
-        ImGui::Checkbox("Costumes", &g_filterCostumes);
+        auto totalResults = static_cast<int>(filteredIndices.size());
+        auto totalPages = std::max(1, (totalResults + kItemSearchPageSize - 1) / kItemSearchPageSize);
+        g_itemSearchPage = std::clamp(g_itemSearchPage, 0, totalPages - 1);
 
-        if (ImGui::SmallButton("Clear Filters##item_search"))
+        ImGui::TextDisabled("Results: %d", totalResults);
+        ImGui::SameLine();
+        ImGui::TextDisabled("Page %d/%d", g_itemSearchPage + 1, totalPages);
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Clear All Filters##item_search"))
         {
             g_filterArmor = false;
             g_filterWeapons = false;
@@ -732,25 +871,14 @@ namespace debug_panel
             g_filterPets = false;
             g_filterWings = false;
             g_filterCostumes = false;
+            g_factionFilter = 0;
+            g_enableLevelFilter = false;
+            g_minLevel = 0;
+            g_maxLevel = 80;
+            g_hideUnnamedItems = false;
+            g_enableGradeFilter = false;
+            g_gradeFilter.fill('\0');
         }
-
-        auto search = to_lower_ascii(g_itemSearch.data());
-        std::vector<int> filteredIndices;
-        filteredIndices.reserve(g_itemEntries.size());
-
-        for (int i = 0; i < static_cast<int>(g_itemEntries.size()); ++i)
-        {
-            if (item_matches_search(g_itemEntries[i], search) && item_matches_category_filter(g_itemEntries[i]))
-                filteredIndices.push_back(i);
-        }
-
-        auto totalResults = static_cast<int>(filteredIndices.size());
-        auto totalPages = std::max(1, (totalResults + kItemSearchPageSize - 1) / kItemSearchPageSize);
-        g_itemSearchPage = std::clamp(g_itemSearchPage, 0, totalPages - 1);
-
-        ImGui::TextDisabled("Results: %d", totalResults);
-        ImGui::SameLine();
-        ImGui::TextDisabled("Page %d/%d", g_itemSearchPage + 1, totalPages);
 
         if (ImGui::SmallButton("Prev##item_page") && g_itemSearchPage > 0)
             --g_itemSearchPage;
@@ -775,6 +903,8 @@ namespace debug_panel
             const auto& entry = g_itemEntries[filteredIndices[i]];
             auto label = std::to_string(entry.itemId)
                 + "  |  " + entry.name
+                + "  |  Grade: " + std::to_string(entry.grade)
+                + "  |  Level: " + std::to_string(entry.level)
                 + "##item_search_" + std::to_string(entry.type) + "_" + std::to_string(entry.typeId);
 
             if (ImGui::Selectable(label.c_str(), false))
@@ -783,11 +913,13 @@ namespace debug_panel
             if (ImGui::IsItemHovered())
             {
                 ImGui::SetTooltip(
-                    "Name: %s\nItemID: %d\nType: %d\nTypeID: %d\nClick: /getitem %d %d 1",
+                    "Name: %s\nItemID: %d\nType: %d\nTypeID: %d\nLevel: %d\nGrade: %d\nClick: /getitem %d %d 1",
                     entry.name.c_str(),
                     entry.itemId,
                     entry.type,
                     entry.typeId,
+                    entry.level,
+                    entry.grade,
                     entry.type,
                     entry.typeId);
             }
