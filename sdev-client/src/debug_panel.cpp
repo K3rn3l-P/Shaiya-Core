@@ -1,931 +1,759 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
-#include <algorithm>
-#include <array>
+#include <cctype>
 #include <cstring>
-#include <fstream>
-#include <iterator>
+#include <cstdio>
 #include <string>
-#include <vector>
 #include <external/imgui/imgui.h>
-#include "include/main.h"
-#include "include/shaiya/CDataFile.h"
-#include "include/shaiya/CPlayerData.h"
-#include "include/shaiya/ItemInfo.h"
-#include "include/shaiya/Static.h"
+#include "include/imgui_layer_internal.h"
 
 using namespace shaiya;
 
 // ---------------------------------------------------------------------------
-// F9 GM debug panel — admin-only chat type monitor.
-//
-// Records incoming chat types with preview text so GMs can identify which
-// chat type IDs correspond to which visual messages.  Useful for tuning
-// upper-bar exclusions and verifying custom chat routing.
-//
-// The monitor only runs when the user explicitly activates it from the
-// panel (per-session toggle, no CONFIG.ini persistence).
+// Minimal GM panel: ID View plus chat options for the parallel chat overlay.
 // ---------------------------------------------------------------------------
 
 namespace debug_panel
 {
+    using namespace imgui_layer;
+
     // -----------------------------------------------------------------------
     // Panel state
     // -----------------------------------------------------------------------
     static bool g_showDebugPanel = false;
-    static bool g_showEftBrowser = false;
     static bool g_f9Down = false;
 
     static constexpr float kPanelW = 546.0f;
     static constexpr float kPanelH = 400.0f;
-    static constexpr float kEftBrowserW = 720.0f;
-    static constexpr float kEftBrowserH = 560.0f;
-
     // -----------------------------------------------------------------------
-    // Chat Type Monitor
-    // -----------------------------------------------------------------------
-    static bool g_chatMonitorActive = false;
+    static bool g_parallelStateLoaded = false;
 
-    struct ChatTypeEntry
+    static void load_parallel_persisted_state()
     {
-        int chatType;
+        if (g_parallelStateLoaded) return;
+        g_parallelStateLoaded = true;
+        using namespace imgui_layer;
+        g_parallelChatActive = read_imgui_bool(kParallelChatActiveKey, false);
+        g_ingameChatActive = read_imgui_bool(kIngameChatActiveKey, false);
+        g_hideNativeChatVisuals = read_imgui_bool(kHideNativeChatKey, false);
+        g_idViewEnabled = read_imgui_bool(kIdViewEnabledKey, true);
+        load_chat_window_layout();
+    }
+
+    struct ParallelChatMsg
+    {
+        int  chatType;
         DWORD tick;
-        char preview[64];
+        char text[512];
     };
 
-    static constexpr int kMaxChatEntries = 64;
-    static ChatTypeEntry g_chatTypeRing[kMaxChatEntries]{};
-    static int g_chatTypeHead = 0;
-    static int g_chatTypeCount = 0;
+    static constexpr int kMaxParallelMsgs = 200;
+    static constexpr int kMaxVisiblePerWindow = 50;  // render at most ~50 msgs per panel (native feel)
+    static ParallelChatMsg g_parallelRing[kMaxParallelMsgs]{};
+    static int g_parallelHead  = 0;
+    static int g_parallelCount = 0;
+    static bool g_parallelColorCustom[100]{};
+    static ImVec4 g_parallelColor[100]{};
 
-    // -----------------------------------------------------------------------
-    // EFT Browser
-    // -----------------------------------------------------------------------
-    struct EftEntry
+    static ImFont* get_parallel_font()
     {
-        std::string path;
-        std::string fileName;
-        std::string lowerFileName;
-    };
+        using namespace imgui_layer;
+        if (g_parallelFontLoaded)
+            return g_parallelFont;
 
-    static bool g_eftCatalogLoaded = false;
-    static std::vector<EftEntry> g_eftEntries;
-    static int g_selectedEftIndex = -1;
-    static bool g_eftLoop = false;
-    static int g_eftLoopMs = 1200;
-    static std::array<char, 128> g_eftSearch{};
+        g_parallelFontLoaded = true;
 
-    std::string to_lower_ascii(std::string value)
-    {
-        std::transform(value.begin(), value.end(), value.begin(), [](unsigned char ch) {
-            return static_cast<char>(std::tolower(ch));
-        });
-        return value;
+        char windowsDir[MAX_PATH]{};
+        if (!GetWindowsDirectoryA(windowsDir, MAX_PATH))
+            return nullptr;
+
+        std::string path(windowsDir);
+        if (!path.empty() && path.back() != '\\')
+            path += "\\";
+        path += "Fonts\\tahoma.ttf";
+
+        DWORD attrs = GetFileAttributesA(path.c_str());
+        if (attrs == INVALID_FILE_ATTRIBUTES)
+            return nullptr;
+
+        auto& io = ImGui::GetIO();
+        ImFontConfig cfg{};
+        cfg.FontDataOwnedByAtlas = true;
+        snprintf(cfg.Name, sizeof(cfg.Name), "Tahoma##ParallelChat");
+        g_parallelFont = io.Fonts->AddFontFromFileTTF(
+            path.c_str(), 14.0f, &cfg, io.Fonts->GetGlyphRangesDefault());
+        return g_parallelFont;
     }
 
-    std::string get_game_relative_path(const char* relativePath)
+    static void push_parallel_font()
     {
-        char modulePath[MAX_PATH]{};
-        if (GetModuleFileNameA(nullptr, modulePath, sizeof(modulePath)) == 0)
-            return relativePath ? relativePath : "";
-
-        auto path = std::string(modulePath);
-        auto slash = path.find_last_of("\\/");
-        if (slash == std::string::npos)
-            return relativePath ? relativePath : "";
-
-        path.resize(slash + 1);
-        if (relativePath)
-            path += relativePath;
-
-        return path;
+        ImGui::PushFont(get_parallel_font(), 14.0f);
     }
 
-    bool read_sah_u32(const std::vector<char>& data, std::size_t& offset, uint32_t& value)
+    static void pop_parallel_font()
     {
-        if (offset + sizeof(value) > data.size())
-            return false;
-
-        std::memcpy(&value, data.data() + offset, sizeof(value));
-        offset += sizeof(value);
-        return true;
+        ImGui::PopFont();
     }
 
-    bool read_sah_u64(const std::vector<char>& data, std::size_t& offset, uint64_t& value)
+    static void push_parallel_msg(int chatType, const char* text)
     {
-        if (offset + sizeof(value) > data.size())
-            return false;
+        auto& msg = g_parallelRing[g_parallelHead];
+        msg.chatType = chatType;
+        msg.tick = GetTickCount();
 
-        std::memcpy(&value, data.data() + offset, sizeof(value));
-        offset += sizeof(value);
-        return true;
-    }
-
-    bool read_sah_string(const std::vector<char>& data, std::size_t& offset, std::string& value)
-    {
-        uint32_t length = 0;
-        if (!read_sah_u32(data, offset, length) || offset + length > data.size())
-            return false;
-
-        value.assign(data.data() + offset, data.data() + offset + length);
-        while (!value.empty() && value.back() == '\0')
-            value.pop_back();
-
-        offset += length;
-        return true;
-    }
-
-    bool is_sah_effect_folder(const std::string& lowerPath)
-    {
-        return lowerPath == "effect"
-            || lowerPath == "data\\effect"
-            || lowerPath.rfind("effect\\", 0) == 0
-            || lowerPath.rfind("data\\effect\\", 0) == 0;
-    }
-
-    void try_add_eft_file(const std::string& lowerPath, const std::string& fileName)
-    {
-        auto lowerFileName = to_lower_ascii(fileName);
-        if (lowerFileName.size() < 4 || lowerFileName.substr(lowerFileName.size() - 4) != ".eft")
-            return;
-
-        if (!is_sah_effect_folder(lowerPath))
-            return;
-
-        auto it = std::find_if(g_eftEntries.begin(), g_eftEntries.end(), [&](const EftEntry& entry) {
-            return entry.lowerFileName == lowerFileName;
-        });
-        if (it != g_eftEntries.end())
-            return;
-
-        g_eftEntries.push_back({ lowerPath, fileName, lowerFileName });
-    }
-
-    bool scan_sah_directory_for_efts(const std::vector<char>& data, std::size_t& offset, const std::string& parentPath)
-    {
-        std::string name;
-        if (!read_sah_string(data, offset, name))
-            return false;
-
-        auto path = parentPath;
-        if (!name.empty())
-            path = path.empty() ? name : path + "\\" + name;
-
-        uint32_t fileCount = 0;
-        if (!read_sah_u32(data, offset, fileCount))
-            return false;
-
-        auto lowerPath = to_lower_ascii(path);
-        for (uint32_t i = 0; i < fileCount; ++i)
+        std::string clean;
+        if (text)
         {
-            std::string fileName;
-            uint64_t fileOffset = 0;
-            uint64_t fileSize = 0;
-            if (!read_sah_string(data, offset, fileName)
-                || !read_sah_u64(data, offset, fileOffset)
-                || !read_sah_u64(data, offset, fileSize))
+            for (std::size_t i = 0; text[i] != '\0';)
             {
-                return false;
+                if (text[i] == '<' && text[i + 1] == '<')
+                {
+                    int hexCount = 0;
+                    while (hexCount < 6 && std::isxdigit(static_cast<unsigned char>(text[i + 2 + hexCount])))
+                        ++hexCount;
+
+                    if (hexCount >= 5)
+                    {
+                        i += 2 + hexCount;
+                        continue;
+                    }
+                }
+
+                clean.push_back(text[i]);
+                ++i;
             }
-
-            try_add_eft_file(lowerPath, fileName);
         }
 
-        uint32_t directoryCount = 0;
-        if (!read_sah_u32(data, offset, directoryCount))
-            return false;
+        if (!clean.empty())
+            strncpy_s(msg.text, clean.c_str(), _TRUNCATE);
+        else if (text && text[0] != '\0')
+            msg.text[0] = '\0';
+        else
+            msg.text[0] = '\0';
 
-        for (uint32_t i = 0; i < directoryCount; ++i)
-        {
-            if (!scan_sah_directory_for_efts(data, offset, path))
-                return false;
-        }
-
-        return true;
-    }
-
-    void ensure_eft_catalog_loaded()
-    {
-        if (g_eftCatalogLoaded)
-            return;
-
-        g_eftCatalogLoaded = true;
-        auto sahPath = get_game_relative_path("data.sah");
-        std::ifstream stream(sahPath, std::ios::binary);
-        if (!stream)
-            return;
-
-        std::vector<char> data(
-            (std::istreambuf_iterator<char>(stream)),
-            std::istreambuf_iterator<char>());
-        if (data.size() <= 0x34 || std::memcmp(data.data(), "SAH", 3) != 0)
-            return;
-
-        auto offset = std::size_t{ 0x34 };
-        if (!scan_sah_directory_for_efts(data, offset, ""))
-            return;
-
-        std::sort(g_eftEntries.begin(), g_eftEntries.end(), [](const EftEntry& lhs, const EftEntry& rhs) {
-            return lhs.lowerFileName < rhs.lowerFileName;
-        });
+        g_parallelHead = (g_parallelHead + 1) % kMaxParallelMsgs;
+        if (g_parallelCount < kMaxParallelMsgs)
+            ++g_parallelCount;
     }
 
     void record_chat_type(int chatType, const char* text)
     {
-        if (!g_chatMonitorActive)
+        load_parallel_persisted_state();
+        if (g_parallelChatActive)
+            push_parallel_msg(chatType, text);
+    }
+
+    bool hide_native_chat_visuals()
+    {
+        return g_hideNativeChatVisuals;
+    }
+
+    // -----------------------------------------------------------------------
+    // Parallel chat rendering helpers and draw function
+    // -----------------------------------------------------------------------
+    static ImVec4 parallel_chat_default_color(int ct)
+    {
+        // Lower chat types â€” game palette
+        if (ct == 34) return ImVec4(1.0f, 1.0f, 1.0f, 1.0f);         // Normal — white
+        if (ct == 35) return ImVec4(0.60f, 1.0f, 0.60f, 1.0f);      // Party â€” light green
+        if (ct == 36) return ImVec4(1.0f, 0.65f, 0.65f, 1.0f);      // Whisper â€” very light red
+        if (ct == 37) return ImVec4(0.85f, 0.55f, 1.0f, 1.0f);      // Guild â€” pink-violet
+        if (ct == 38) return ImVec4(1.0f, 0.808f, 0.490f, 1.0f);     // Trade â€” rgb(255,206,125)
+        if (ct == 39) return ImVec4(1.0f, 1.0f, 1.0f, 1.0f);        // Area/Shout â€” white
+        if (ct == 40) return ImVec4(1.0f, 1.0f, 0.30f, 1.0f);       // Chat40 â€” yellow
+        if (ct == 41) return ImVec4(1.0f, 1.0f, 1.0f, 1.0f);        // Admin/GM â€” white (no distinction)
+        if (ct == 42) return ImVec4(1.0f, 0.50f, 0.20f, 1.0f);      // Warning â€” orange
+        if (ct == 44) return ImVec4(0.0f, 0.851f, 1.0f, 1.0f);      // rgb(0,217,255)
+        if (ct == 49) return ImVec4(0.431f, 0.443f, 1.0f, 1.0f);    // Raid â€” rgb(110,113,255)
+
+        // Upper bar system messages
+        if (ct == 15) return ImVec4(1.0f, 0.60f, 0.0f, 1.0f);       // Damage â€” orange
+        if (ct == 16) return ImVec4(1.0f, 0.30f, 0.30f, 1.0f);
+        if (ct == 17) return ImVec4(1.0f, 0.0f, 0.0f, 1.0f);        // rgb(255,0,0)
+        if (ct == 18) return ImVec4(1.0f, 0.824f, 0.349f, 1.0f);  // rgb(255,210,89)
+        if (ct == 19) return ImVec4(0.30f, 1.0f, 0.30f, 1.0f);
+        if (ct == 20) return ImVec4(0.957f, 0.302f, 1.0f, 1.0f);    // rgb(244,77,255)
+        if (ct == 21) return ImVec4(0.50f, 0.80f, 1.0f, 1.0f);
+        if (ct == 22) return ImVec4(0.50f, 1.0f, 0.50f, 1.0f);
+
+        // Notices / system — individual types for easier customisation
+        if (ct == 23) return ImVec4(1.0f, 1.0f, 1.0f, 1.0f);         // Notice23 — white
+        if (ct == 24) return ImVec4(1.0f, 1.0f, 0.30f, 1.0f);        // Notice24 — yellow
+        if (ct == 25) return ImVec4(1.0f, 1.0f, 1.0f, 1.0f);         // Notice25 — white
+        if (ct == 26) return ImVec4(1.0f, 1.0f, 1.0f, 1.0f);         // Notice26 — white
+        if (ct == 27) return ImVec4(1.0f, 1.0f, 1.0f, 1.0f);         // Notice27 — white
+        if (ct == 28) return ImVec4(1.0f, 1.0f, 1.0f, 1.0f);         // Notice28 — white
+        if (ct == 29) return ImVec4(1.0f, 1.0f, 1.0f, 1.0f);         // Notice29 — white
+        if (ct == 30) return ImVec4(1.0f, 1.0f, 1.0f, 1.0f);         // Notice30 — white
+        if (ct == 31) return ImVec4(1.0f, 1.0f, 1.0f, 1.0f);         // Acquire31 — white
+        if (ct >= 50) return ImVec4(0.65f, 0.65f, 0.65f, 1.0f);
+
+        return ImVec4(0.80f, 0.80f, 0.80f, 1.0f);
+    }
+
+    static ImVec4 parallel_chat_color(int ct)
+    {
+        if (ct >= 0 && ct < static_cast<int>(sizeof(g_parallelColorCustom) / sizeof(g_parallelColorCustom[0])) &&
+            g_parallelColorCustom[ct])
+            return g_parallelColor[ct];
+
+        return parallel_chat_default_color(ct);
+    }
+
+    static const char* chat_type_tag(int ct)
+    {
+        switch (ct)
+        {
+        case 15: return "[Dmg15]";
+        case 16: return "[Dmg16]";
+        case 17: return "[Death]";
+        case 18: return "[Acq18]";
+        case 19: return "[Acq19]";
+        case 20: return "[Dmg20]";
+        case 21: return "[Acq21]";
+        case 22: return "[Acq22]";
+        case 23: return "[Not23]";
+        case 24: return "[Not24]";
+        case 25: return "[Not25]";
+        case 26: return "[Not26]";
+        case 27: return "[Not27]";
+        case 28: return "[Not28]";
+        case 29: return "[Not29]";
+        case 30: return "[Not30]";
+        case 31: return "[Acq31]";
+        case 34: return "[Normal]";
+        case 35: return "[Party]";
+        case 36: return "[Whisper]";
+        case 37: return "[Guild]";
+        case 38: return "[Trade]";
+        case 39: return "[Area]";
+        case 40: return "[Chat40]";
+        case 41: return "(GM)";
+        case 42: return "[Warning]";
+        case 43: return "[Chat43]";
+        case 44: return "[Chat44]";
+        case 45: return "[Chat45]";
+        case 46: return "[Chat46]";
+        case 47: return "[All]";
+        case 48: return "[Zone]";
+        case 49: return "[Raid]";
+        case 50: return "[Not50]";
+        default: return nullptr;
+        }
+    }
+
+    static bool is_upper_parallel_chat_type(int ct)
+    {
+        return (ct >= 15 && ct <= 33) || ct == 50;
+    }
+
+    static void draw_parallel_color_controls()
+    {
+        if (!ImGui::CollapsingHeader("Colors"))
             return;
 
-        auto& entry = g_chatTypeRing[g_chatTypeHead % kMaxChatEntries];
-        entry.chatType = chatType;
-        entry.tick = GetTickCount();
-        if (text)
-        {
-            strncpy_s(entry.preview, text, _TRUNCATE);
-            entry.preview[sizeof(entry.preview) - 1] = '\0';
-        }
-        else
-        {
-            entry.preview[0] = '\0';
-        }
-        g_chatTypeHead = (g_chatTypeHead + 1) % kMaxChatEntries;
-        if (g_chatTypeCount < kMaxChatEntries)
-            ++g_chatTypeCount;
-    }
+        static int selectedType = 34;
+        ImGui::SetNextItemWidth(90.0f);
+        ImGui::InputInt("Chat Type", &selectedType, 1, 5);
+        selectedType = std::clamp(selectedType, 0, 99);
 
-    static void clear_chat_entries()
-    {
-        g_chatTypeHead = 0;
-        g_chatTypeCount = 0;
-    }
+        auto defaultColor = parallel_chat_default_color(selectedType);
+        if (!g_parallelColorCustom[selectedType])
+            g_parallelColor[selectedType] = defaultColor;
 
-    static void draw_chat_monitor()
-    {
-        ImGui::Checkbox("Active##chat", &g_chatMonitorActive);
         ImGui::SameLine();
-        if (ImGui::SmallButton("Clear##chat"))
-            clear_chat_entries();
-
-        ImGui::Separator();
-
-        if (!g_chatMonitorActive && g_chatTypeCount == 0)
+        if (ImGui::SmallButton("Use current##parallel_color"))
+            g_parallelColorCustom[selectedType] = true;
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Reset##parallel_color"))
         {
-            ImGui::TextDisabled("Enable to start recording chat types.");
+            g_parallelColorCustom[selectedType] = false;
+            g_parallelColor[selectedType] = defaultColor;
+        }
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Reset all##parallel_colors"))
+        {
+            for (auto& custom : g_parallelColorCustom)
+                custom = false;
+        }
+
+        bool custom = g_parallelColorCustom[selectedType];
+        if (ImGui::Checkbox("Custom color", &custom))
+        {
+            g_parallelColorCustom[selectedType] = custom;
+            if (custom)
+                g_parallelColor[selectedType] = defaultColor;
+        }
+
+        ImGui::SameLine();
+        ImGui::ColorButton("Default##parallel_color_default", defaultColor);
+
+        ImGui::BeginDisabled(!g_parallelColorCustom[selectedType]);
+        ImGui::SetNextItemWidth(240.0f);
+        ImGui::ColorEdit4("Color", reinterpret_cast<float*>(&g_parallelColor[selectedType]),
+            ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_AlphaBar);
+        ImGui::EndDisabled();
+
+        ImGui::TextDisabled("Quick select:");
+        const int commonTypes[] = { 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50 };
+        for (int i = 0; i < static_cast<int>(sizeof(commonTypes) / sizeof(commonTypes[0])); ++i)
+        {
+            if (i > 0)
+                ImGui::SameLine();
+
+            int ct = commonTypes[i];
+            auto col = parallel_chat_color(ct);
+            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(col.x, col.y, col.z, 0.35f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(col.x, col.y, col.z, 0.55f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(col.x, col.y, col.z, 0.75f));
+            char label[16];
+            snprintf(label, sizeof(label), "%d##pct", ct);
+            if (ImGui::SmallButton(label))
+                selectedType = ct;
+            ImGui::PopStyleColor(3);
+
+            if ((i + 1) % 9 == 0)
+                ImGui::NewLine();
+        }
+    }
+
+    // Draw a single chat message with inline emoji/gif rendering.
+    // Uses ImDrawList directly so text + emoji positioning is exact
+    // even when the message wraps across multiple lines.
+    static void draw_parallel_line(const char* text, const ImVec4& color)
+    {
+        using namespace imgui_layer;
+        if (!text || text[0] == '\0')
+        {
+            ImGui::Dummy(ImVec2(1.0f, ImGui::GetTextLineHeight()));
             return;
         }
 
-        if (g_chatTypeCount == 0)
+        auto* drawList = ImGui::GetWindowDrawList();
+        auto  origin   = ImGui::GetCursorScreenPos();
+        float availW   = ImGui::GetContentRegionAvail().x;
+        float lineH    = ImGui::GetTextLineHeight();
+        float emojiSz  = lineH;
+        ImU32 col32    = ImGui::ColorConvertFloat4ToU32(color);
+        ImU32 shadow32 = IM_COL32(0, 0, 0, 170);
+        auto* font     = ImGui::GetFont();
+        float fontSize = ImGui::GetFontSize();
+
+        float cx = 0.0f;
+        float cy = 0.0f;
+        auto  len = std::strlen(text);
+        std::size_t idx = 0;
+
+        while (idx < len)
         {
-            ImGui::TextDisabled("Waiting for chat messages...");
-            return;
-        }
-
-        ImGui::Columns(3, "chat_types_cols", true);
-        ImGui::SetColumnWidth(0, 50.0f);
-        ImGui::SetColumnWidth(1, 80.0f);
-        ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "Type");
-        ImGui::NextColumn();
-        ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "Ago");
-        ImGui::NextColumn();
-        ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "Preview");
-        ImGui::NextColumn();
-        ImGui::Separator();
-
-        auto now = GetTickCount();
-        for (int i = 0; i < g_chatTypeCount; ++i)
-        {
-            auto idx = (g_chatTypeHead - 1 - i + kMaxChatEntries * 2) % kMaxChatEntries;
-            auto& entry = g_chatTypeRing[idx];
-
-            auto type = entry.chatType;
-            ImVec4 typeColor(1.0f, 1.0f, 1.0f, 1.0f);
-            if (type == 15)      typeColor = ImVec4(1.0f, 0.6f, 0.0f, 1.0f);
-            else if (type == 16 || type == 17) typeColor = ImVec4(1.0f, 0.3f, 0.3f, 1.0f);
-            else if (type == 18) typeColor = ImVec4(1.0f, 1.0f, 0.3f, 1.0f);
-            else if (type == 19) typeColor = ImVec4(0.3f, 1.0f, 0.3f, 1.0f);
-            else if (type == 20) typeColor = ImVec4(0.7f, 0.3f, 1.0f, 1.0f);
-            else if (type == 21) typeColor = ImVec4(0.5f, 0.8f, 1.0f, 1.0f);
-            else if (type == 22) typeColor = ImVec4(0.5f, 1.0f, 0.5f, 1.0f);
-            else if (type == 34) typeColor = ImVec4(0.7f, 0.7f, 0.7f, 1.0f);
-
-            ImGui::TextColored(typeColor, "%d", type);
-            ImGui::NextColumn();
-
-            auto elapsed = now - entry.tick;
-            if (elapsed < 60000)
-                ImGui::Text("%ds", elapsed / 1000);
-            else
-                ImGui::Text("%dm%ds", elapsed / 60000, (elapsed % 60000) / 1000);
-            ImGui::NextColumn();
-
-            ImGui::TextUnformatted(entry.preview);
-            ImGui::NextColumn();
-        }
-
-        ImGui::Columns(1);
-    }
-
-    // -----------------------------------------------------------------------
-    // GM Commands
-    // -----------------------------------------------------------------------
-    struct GmCommandEntry
-    {
-        const char* category;
-        const char* templateText;
-        const char* insertText;
-        const char* description;
-    };
-
-    static constexpr auto kGmCommands = std::to_array<GmCommandEntry>({
-        { "Character", "/char on", "/char on", "Enable character mode/visibility state." },
-        { "Character", "/char off", "/char off", "Disable character mode/visibility state." },
-        { "Character", "/attack on", "/attack on", "Enable attack mode." },
-        { "Character", "/attack off", "/attack off", "Disable attack mode." },
-
-        { "Movement", "/cmove <MapID>", "/cmove", "Move yourself to a map id." },
-        { "Movement", "/amove <UserName>", "/amove", "Move to target player." },
-        { "Movement", "/bmove <X> <Y> <MapID>", "/bmove", "Move to explicit coordinates/map." },
-
-        { "Summon", "/asummon <UserName>", "/asummon", "Summon one player to you." },
-        { "Summon", "/bsummon <UserName> <X> <Z> <MapID>", "/bsummon", "Summon player to specific map coordinates." },
-        { "Summon", "/xcall <Faction#>", "/xcall", "Summon an entire faction (1 Light, 2 Fury)." },
-
-        { "Items", "/getitem <ItemType> <ItemTypeID> <ItemCount>", "/getitem", "Create item by type/typeId/count." },
-        { "Items", "/getitem <type> <typeid>", "/getitem", "Short item create form." },
-        { "Items", "/imake \"Item Name Here\"", "/imake", "Create item by item name text." },
-
-        { "NPC", "/nmake <TypeID>", "/nmake", "Spawn NPC by type id." },
-        { "NPC", "/nera <TypeID>", "/nera", "Delete NPC by type id." },
-
-        { "MOB", "/mmake <MobID>", "/mmake", "Spawn mob by id." },
-        { "MOB", "/mera <TypeID>", "/mera", "Delete mobs in range / by type id." },
-        { "MOB", "/mera t", "/mera t", "Delete currently targeted mob." },
-
-        { "Notices", "/notice \"Message Here\"", "/notice", "Global server notice." },
-        { "Notices", "/bnotice \"Message Here\"", "/bnotice", "Broadcast notice." },
-        { "Notices", "/znotice \"Message Here\"", "/znotice", "Notice on current map only." },
-        { "Notices", "/wnotice <UserName> \"Message Here\"", "/wnotice", "Notice-style whisper to one user." },
-        { "Notices", "/cnotice \"Message Here\"", "/cnotice", "Faction-only notice." },
-        { "Notices", "/gmnotice \"Message Here\"", "/gmnotice", "GM-only notice." },
-        { "Notices", "/warning <UserName> \"Message Here\"", "/warning", "Warning message to one user." },
-
-        { "Moderation", "/kick <UserName>", "/kick", "Kick player offline." },
-        { "Moderation", "/stopon <UserName>", "/stopon", "Apply movement restriction." },
-        { "Moderation", "/stopoff <UserName>", "/stopoff", "Remove movement restriction." },
-        { "Moderation", "/silence on <UserName>", "/silence on", "Enable chat silence on player." },
-        { "Moderation", "/silence off <UserName>", "/silence off", "Disable chat silence on player." },
-        { "Moderation", "/watch <UserName>", "/watch", "Locate or track a player." },
-
-        { "Inventory/Admin", "/eclear <UserName>", "/eclear", "Clear equipped items of user." },
-        { "Inventory/Admin", "/iclear <UserName>", "/iclear", "Clear inventory of user." },
-        { "Inventory/Admin", "/cure <UserName>", "/cure", "Cure target user or self." },
-        { "Inventory/Admin", "/set <UserName> <skillpoint|money|kill|str|dex|luc|wis|int|rec> <Amount>", "/set", "Set selected user stat/value." },
-        { "Inventory/Admin", "/apowercan <UserName>", "/apowercan", "Remove GM powers for user." },
-        { "Inventory/Admin", "/auctionsearch <UserName>", "/auctionsearch", "Inspect player auction listings." },
-        { "Inventory/Admin", "/auctionrecall <UserName>", "/auctionrecall", "Recall player market items." },
-
-        { "Camera", "/camlimit on", "/camlimit on", "Enable camera limit mode." },
-        { "Camera", "/camlimit off", "/camlimit off", "Disable camera limit mode." },
-
-        { "Untested", "/addpoints [CharName] [count]", "/addpoints", "Untested: add points." },
-        { "Untested", "/addapall [x]", "/addapall", "Untested: add AP all." },
-        { "Untested", "/getpoints", "/getpoints", "Untested: query points." },
-        { "Untested", "/promote [GM CharName]", "/promote", "Untested: promote GM." },
-        { "Untested", "/demote [GM CharName]", "/demote", "Untested: demote GM." },
-        { "Untested", "/tempban [CharName] [count] [m/h/d]", "/tempban", "Untested: temporary ban." },
-        { "Untested", "/ban [CharName]", "/ban", "Untested: ban." },
-        { "Untested", "/fullban [CharName]", "/fullban", "Untested: full ban." },
-        { "Untested", "/unban [CharName]", "/unban", "Untested: unban." },
-        { "Untested", "/makegsl [CharName]", "/makegsl", "Untested: grant GSL." },
-        { "Untested", "/removegsl [CharName]", "/removegsl", "Untested: remove GSL." },
-        { "Untested", "/makegs [CharName]", "/makegs", "Untested: grant GS." },
-        { "Untested", "/removegs [CharName]", "/removegs", "Untested: remove GS." },
-        { "Untested", "/makegm [CharName]", "/makegm", "Untested: grant GM." },
-        { "Untested", "/removegm [CharName]", "/removegm", "Untested: remove GM." },
-        { "Untested", "/makea [CharName]", "/makea", "Untested: grant admin." },
-        { "Untested", "/removea [CharName]", "/removea", "Untested: remove admin." },
-        { "Untested", "/reschar [CharName]", "/reschar", "Untested: restore character." },
-        { "Untested", "/delchar [CharName]", "/delchar", "Untested: delete character." },
-        { "Untested", "/disableacc [CharName]", "/disableacc", "Untested: disable account." },
-        { "Untested", "/enableacc [CharName]", "/enableacc", "Untested: enable account." }
-    });
-
-    static constexpr auto kGmCommandCategories = std::to_array<const char*>({
-        "Character",
-        "Movement",
-        "Summon",
-        "Items",
-        "NPC",
-        "MOB",
-        "Notices",
-        "Moderation",
-        "Inventory/Admin",
-        "Camera",
-        "Untested"
-    });
-
-    static std::array<char, 128> g_gmCommandSearch{};
-
-    static void post_gm_command_to_chat(const char* command)
-    {
-        ensure_client_sysmsg_dispatch_ready();
-        if (!command || !command[0] || !g_var->hwnd || !IsWindow(g_var->hwnd))
-            return;
-
-        SendMessageA(g_var->hwnd, kClientGMCommandWindowMessage, 0, reinterpret_cast<LPARAM>(command));
-    }
-
-    static bool command_matches_search(const GmCommandEntry& entry, const std::string& lowerSearch)
-    {
-        if (lowerSearch.empty())
-            return true;
-
-        auto lowerTemplate = to_lower_ascii(entry.templateText);
-        auto lowerCategory = to_lower_ascii(entry.category);
-        auto lowerDescription = to_lower_ascii(entry.description);
-        return lowerTemplate.find(lowerSearch) != std::string::npos
-            || lowerCategory.find(lowerSearch) != std::string::npos
-            || lowerDescription.find(lowerSearch) != std::string::npos;
-    }
-
-    static void draw_gm_commands()
-    {
-        ImGui::InputTextWithHint("##gm_cmd_search", "Search command...", g_gmCommandSearch.data(), g_gmCommandSearch.size());
-        auto search = to_lower_ascii(g_gmCommandSearch.data());
-        ImGui::TextDisabled("Click a command to insert it into the chat input.");
-
-        for (const auto* category : kGmCommandCategories)
-        {
-            bool hasVisible = false;
-            for (const auto& entry : kGmCommands)
+            auto* emoji = (text[idx] == ':') ? find_emoji_by_token(text + idx) : nullptr;
+            if (emoji)
             {
-                if (std::strcmp(entry.category, category) == 0 && command_matches_search(entry, search))
+                auto tex = get_emoji_texture(*emoji);
+                if (tex)
                 {
-                    hasVisible = true;
-                    break;
+                    if (cx + emojiSz > availW && cx > 0.0f)
+                    { cx = 0.0f; cy += lineH; }
+
+                    drawList->AddImage(reinterpret_cast<ImTextureID>(tex),
+                        ImVec2(origin.x + cx, origin.y + cy),
+                        ImVec2(origin.x + cx + emojiSz, origin.y + cy + emojiSz));
+                    cx += emojiSz;
                 }
-            }
-
-            if (!hasVisible)
+                idx += emoji->token.size();
                 continue;
+            }
 
-            if (!ImGui::TreeNode(category))
-                continue;
+            auto runStart = idx;
+            while (idx < len && !(text[idx] == ':' && find_emoji_by_token(text + idx)))
+                ++idx;
 
-            for (std::size_t i = 0; i < kGmCommands.size(); ++i)
+            const char* p    = text + runStart;
+            const char* pEnd = text + idx;
+
+            while (p < pEnd)
             {
-                const auto& entry = kGmCommands[i];
-                if (std::strcmp(entry.category, category) != 0)
+                const char* batchStart = p;
+                float batchW = 0.0f;
+
+                while (p < pEnd)
+                {
+                    float cw = font->CalcTextSizeA(fontSize, FLT_MAX, 0.0f, p, p + 1).x;
+                    if (cx + batchW + cw > availW && (batchW > 0.0f || cx > 0.0f))
+                        break;
+                    batchW += cw;
+                    ++p;
+                }
+
+                if (batchStart == p)
+                {
+                    if (cx > 0.0f) { cx = 0.0f; cy += lineH; }
+                    else
+                    {
+                        float cw = font->CalcTextSizeA(fontSize, FLT_MAX, 0.0f, p, p + 1).x;
+                        drawList->AddText(ImVec2(origin.x + 1.0f, origin.y + cy + 1.0f), shadow32, p, p + 1);
+                        drawList->AddText(ImVec2(origin.x, origin.y + cy), col32, p, p + 1);
+                        cx = cw; ++p;
+                    }
                     continue;
+                }
 
-                if (!command_matches_search(entry, search))
-                    continue;
-
-                auto label = std::string(entry.templateText) + "##gm_cmd_" + std::to_string(i);
-                if (ImGui::Selectable(label.c_str()))
-                    post_gm_command_to_chat(entry.insertText);
-
-                if (ImGui::IsItemHovered())
-                    ImGui::SetTooltip("%s\nInsert: %s", entry.description, entry.insertText);
-            }
-
-            ImGui::TreePop();
-        }
-    }
-
-    // -----------------------------------------------------------------------
-    // Item Search
-    // -----------------------------------------------------------------------
-    struct ItemSearchEntry
-    {
-        int type;
-        int typeId;
-        int itemId;
-        int level;
-        int grade;
-        std::string name;
-        std::string lowerName;
-    };
-
-    static bool g_itemCatalogLoaded = false;
-    static std::vector<ItemSearchEntry> g_itemEntries;
-    static std::array<char, 128> g_itemSearch{};
-    static int g_itemSearchPage = 0;
-    static constexpr int kItemSearchPageSize = 25;
-
-    static bool g_filterArmor = false;
-    static bool g_filterWeapons = false;
-    static bool g_filterAccessories = false;
-    static bool g_filterLapis = false;
-    static bool g_filterCapes = false;
-    static bool g_filterMounts = false;
-    static bool g_filterConsumables = false;
-    static bool g_filterPets = false;
-    static bool g_filterWings = false;
-    static bool g_filterCostumes = false;
-
-    static int g_factionFilter = 0;
-    static int g_minLevel = 0;
-    static int g_maxLevel = 80;
-    static bool g_enableLevelFilter = false;
-    static bool g_hideUnnamedItems = true;
-    static std::array<char, 7> g_gradeFilter{};
-    static bool g_enableGradeFilter = false;
-
-    static bool is_light_armor_type(int type)
-    {
-        return type == 16 || type == 17 || type == 18 || type == 20 || type == 21
-            || type == 67 || type == 68 || type == 70 || type == 71 || type == 72
-            || type == 73 || type == 74 || type == 76 || type == 77;
-    }
-
-    static bool is_fury_armor_type(int type)
-    {
-        return type == 31 || type == 32 || type == 33 || type == 35 || type == 36
-            || type == 82 || type == 83 || type == 85 || type == 86 || type == 87
-            || type == 88 || type == 89 || type == 91 || type == 92;
-    }
-
-    static bool is_armor_type(int type)
-    {
-        return is_light_armor_type(type) || is_fury_armor_type(type);
-    }
-
-    static bool is_light_weapon_type(int type)
-    {
-        return type == 1 || type == 2 || type == 5 || type == 6 || type == 7
-            || type == 8 || type == 9 || type == 10 || type == 12 || type == 13
-            || type == 14 || type == 15 || type == 19 || type == 45 || type == 46
-            || type == 49 || type == 51 || type == 53 || type == 55 || type == 57
-            || type == 58 || type == 60 || type == 62 || type == 64 || type == 65
-            || type == 69;
-    }
-
-    static bool is_fury_weapon_type(int type)
-    {
-        return type == 3 || type == 4 || type == 5 || type == 6 || type == 7
-            || type == 8 || type == 9 || type == 10 || type == 11 || type == 12
-            || type == 13 || type == 15 || type == 34 || type == 47 || type == 48
-            || type == 50 || type == 52 || type == 54 || type == 56 || type == 57
-            || type == 58 || type == 59 || type == 61 || type == 63 || type == 65
-            || type == 84;
-    }
-
-    static bool is_weapon_type(int type)
-    {
-        return is_light_weapon_type(type) || is_fury_weapon_type(type);
-    }
-
-    static bool is_accessory_type(int type)
-    {
-        return type == 22 || type == 23 || type == 37 || type == 40 || type == 96 || type == 97;
-    }
-
-    static bool is_lapis_type(int type)
-    {
-        return type == 30 || type == 95;
-    }
-
-    static bool is_cape_type(int type)
-    {
-        return type == 24 || type == 39;
-    }
-
-    static bool is_mount_type(int type)
-    {
-        return type == 42;
-    }
-
-    static bool is_consumable_type(int type)
-    {
-        return type == 25 || type == 27 || type == 28 || type == 29 || type == 38
-            || type == 41 || type == 43 || type == 44 || type == 94 || type == 99
-            || type == 100 || type == 101 || type == 102;
-    }
-
-    static bool is_pet_type(int type)
-    {
-        return type == 120;
-    }
-
-    static bool is_wing_type(int type)
-    {
-        return type == 121;
-    }
-
-    static bool is_costume_type(int type)
-    {
-        return type == 150;
-    }
-
-    static void send_getitem_type_typeid_to_chat(int type, int typeId)
-    {
-        ensure_client_sysmsg_dispatch_ready();
-        if (!g_var->hwnd || !IsWindow(g_var->hwnd))
-            return;
-
-        char command[64]{};
-        sprintf_s(command, "/getitem %d %d 1", type, typeId);
-        SendMessageA(g_var->hwnd, kClientGMCommandWindowMessage, 0, reinterpret_cast<LPARAM>(command));
-    }
-
-    static void ensure_item_catalog_loaded()
-    {
-        if (g_itemCatalogLoaded)
-            return;
-
-        g_itemCatalogLoaded = true;
-        g_itemEntries.clear();
-        g_itemEntries.reserve(4096);
-
-        for (int type = 1; type <= 255; ++type)
-        {
-            for (int typeId = 1; typeId <= 255; ++typeId)
-            {
-                auto* itemInfo = CDataFile::GetItemInfo(type, typeId);
-                if (!itemInfo)
-                    continue;
-
-                std::string name = itemInfo->name ? itemInfo->name : "";
-                if (name.empty())
-                    name = "(unnamed)";
-
-                g_itemEntries.push_back({
-                    type,
-                    typeId,
-                    type * 1000 + typeId,
-                    static_cast<int>(itemInfo->level),
-                    static_cast<int>(itemInfo->dropGrade),
-                    name,
-                    to_lower_ascii(name)
-                });
+                drawList->AddText(ImVec2(origin.x + cx + 1.0f, origin.y + cy + 1.0f), shadow32, batchStart, p);
+                drawList->AddText(ImVec2(origin.x + cx, origin.y + cy), col32, batchStart, p);
+                cx += batchW;
             }
         }
 
-        std::sort(g_itemEntries.begin(), g_itemEntries.end(), [](const ItemSearchEntry& lhs, const ItemSearchEntry& rhs) {
-            if (lhs.itemId != rhs.itemId)
-                return lhs.itemId < rhs.itemId;
-            return lhs.lowerName < rhs.lowerName;
-        });
-
-        g_itemSearchPage = 0;
+        ImGui::Dummy(ImVec2(availW, cy + lineH));
     }
 
-    static bool item_matches_search(const ItemSearchEntry& entry, const std::string& lowerSearch)
+    static void draw_parallel_message_row(const ParallelChatMsg& msg)
     {
-        if (lowerSearch.empty())
-            return true;
-
-        if (entry.lowerName.find(lowerSearch) != std::string::npos)
-            return true;
-
-        if (std::to_string(entry.itemId).find(lowerSearch) != std::string::npos)
-            return true;
-
-        if (std::to_string(entry.type).find(lowerSearch) != std::string::npos)
-            return true;
-
-        return std::to_string(entry.typeId).find(lowerSearch) != std::string::npos;
+        auto color = parallel_chat_color(msg.chatType);
+        push_parallel_font();
+        draw_parallel_line(msg.text, color);
+        pop_parallel_font();
     }
 
-    static bool item_matches_faction_filter(const ItemSearchEntry& entry)
+
+    static void draw_parallel_chat()
     {
-        if (g_factionFilter == 0)
-            return true;
+        using namespace imgui_layer;
 
-        bool isLight = is_light_armor_type(entry.type) || is_light_weapon_type(entry.type);
-        bool isFury = is_fury_armor_type(entry.type) || is_fury_weapon_type(entry.type);
-
-        if (g_factionFilter == 1)
-            return isLight;
-        if (g_factionFilter == 2)
-            return isFury;
-
-        return !isLight && !isFury;
-    }
-
-    static bool item_matches_level_filter(const ItemSearchEntry& entry)
-    {
-        if (!g_enableLevelFilter)
-            return true;
-
-        return entry.level >= g_minLevel && entry.level <= g_maxLevel;
-    }
-
-    static bool item_matches_unnamed_filter(const ItemSearchEntry& entry)
-    {
-        if (!g_hideUnnamedItems)
-            return true;
-
-        return entry.name.find("???") == std::string::npos;
-    }
-
-    static bool item_matches_grade_filter(const ItemSearchEntry& entry)
-    {
-        if (!g_enableGradeFilter || g_gradeFilter[0] == '\0')
-            return true;
-
-        try {
-            int filterGrade = std::stoi(g_gradeFilter.data());
-            return entry.grade == filterGrade;
-        }
-        catch (...) {
-            return true;
-        }
-    }
-
-    static bool item_matches_category_filter(const ItemSearchEntry& entry)
-    {
-        bool anyFilterActive = g_filterArmor || g_filterWeapons || g_filterAccessories
-            || g_filterLapis || g_filterCapes || g_filterMounts || g_filterConsumables
-            || g_filterPets || g_filterWings || g_filterCostumes;
-
-        if (!anyFilterActive)
-            return true;
-
-        if (g_filterArmor && is_armor_type(entry.type))
-            return true;
-        if (g_filterWeapons && is_weapon_type(entry.type))
-            return true;
-        if (g_filterAccessories && is_accessory_type(entry.type))
-            return true;
-        if (g_filterLapis && is_lapis_type(entry.type))
-            return true;
-        if (g_filterCapes && is_cape_type(entry.type))
-            return true;
-        if (g_filterMounts && is_mount_type(entry.type))
-            return true;
-        if (g_filterConsumables && is_consumable_type(entry.type))
-            return true;
-        if (g_filterPets && is_pet_type(entry.type))
-            return true;
-        if (g_filterWings && is_wing_type(entry.type))
-            return true;
-        if (g_filterCostumes && is_costume_type(entry.type))
-            return true;
-
-        return false;
-    }
-
-    static void draw_item_search()
-    {
-        ensure_item_catalog_loaded();
-
-        ImGui::InputTextWithHint("##item_search_input", "Search by ItemID / Name / type / typeId...", g_itemSearch.data(), g_itemSearch.size());
+        if (ImGui::Checkbox("Active##parallel", &g_parallelChatActive))
+            write_imgui_bool(kParallelChatActiveKey, g_parallelChatActive);
         ImGui::SameLine();
-        ImGui::Checkbox("Hide Unnamed (???)##unnamed", &g_hideUnnamedItems);
-
-        if (ImGui::CollapsingHeader("Advanced Filters"))
-        {
-            ImGui::Indent();
-
-            ImGui::TextDisabled("Faction Filter:");
-            ImGui::RadioButton("Both##faction", &g_factionFilter, 0);
-            ImGui::SameLine();
-            ImGui::RadioButton("Light##faction", &g_factionFilter, 1);
-            ImGui::SameLine();
-            ImGui::RadioButton("Fury##faction", &g_factionFilter, 2);
-
-            ImGui::Separator();
-            ImGui::Checkbox("Enable Level Filter", &g_enableLevelFilter);
-            if (g_enableLevelFilter)
-            {
-                ImGui::SetNextItemWidth(80.0f);
-                ImGui::InputInt("Min##level", &g_minLevel, 1, 10);
-                g_minLevel = std::clamp(g_minLevel, 0, 80);
-                ImGui::SameLine();
-                ImGui::SetNextItemWidth(80.0f);
-                ImGui::InputInt("Max##level", &g_maxLevel, 1, 10);
-                g_maxLevel = std::clamp(g_maxLevel, 0, 80);
-                if (g_minLevel > g_maxLevel)
-                    g_minLevel = g_maxLevel;
-            }
-
-            ImGui::Separator();
-            ImGui::Checkbox("Enable Grade Filter", &g_enableGradeFilter);
-            if (g_enableGradeFilter)
-            {
-                ImGui::SameLine();
-                ImGui::SetNextItemWidth(100.0f);
-                ImGui::InputText("##grade_input", g_gradeFilter.data(), g_gradeFilter.size(), ImGuiInputTextFlags_CharsDecimal);
-            }
-
-            ImGui::Separator();
-            ImGui::TextDisabled("Category Filters:");
-            ImGui::Checkbox("Armor", &g_filterArmor);
-            ImGui::SameLine();
-            ImGui::Checkbox("Weapons", &g_filterWeapons);
-            ImGui::SameLine();
-            ImGui::Checkbox("Accessories", &g_filterAccessories);
-            ImGui::SameLine();
-            ImGui::Checkbox("Lapis", &g_filterLapis);
-            ImGui::SameLine();
-            ImGui::Checkbox("Capes", &g_filterCapes);
-
-            ImGui::Checkbox("Mounts", &g_filterMounts);
-            ImGui::SameLine();
-            ImGui::Checkbox("Consumables", &g_filterConsumables);
-            ImGui::SameLine();
-            ImGui::Checkbox("Pets", &g_filterPets);
-            ImGui::SameLine();
-            ImGui::Checkbox("Wings", &g_filterWings);
-            ImGui::SameLine();
-            ImGui::Checkbox("Costumes", &g_filterCostumes);
-
-            ImGui::Unindent();
-        }
-
-        auto search = to_lower_ascii(g_itemSearch.data());
-        std::vector<int> filteredIndices;
-        filteredIndices.reserve(g_itemEntries.size());
-
-        for (int i = 0; i < static_cast<int>(g_itemEntries.size()); ++i)
-        {
-            if (item_matches_search(g_itemEntries[i], search)
-                && item_matches_category_filter(g_itemEntries[i])
-                && item_matches_faction_filter(g_itemEntries[i])
-                && item_matches_level_filter(g_itemEntries[i])
-                && item_matches_unnamed_filter(g_itemEntries[i])
-                && item_matches_grade_filter(g_itemEntries[i]))
-            {
-                filteredIndices.push_back(i);
-            }
-        }
-
-        auto totalResults = static_cast<int>(filteredIndices.size());
-        auto totalPages = std::max(1, (totalResults + kItemSearchPageSize - 1) / kItemSearchPageSize);
-        g_itemSearchPage = std::clamp(g_itemSearchPage, 0, totalPages - 1);
-
-        ImGui::TextDisabled("Results: %d", totalResults);
+        if (ImGui::Checkbox("In-game overlay", &g_ingameChatActive))
+            write_imgui_bool(kIngameChatActiveKey, g_ingameChatActive);
         ImGui::SameLine();
-        ImGui::TextDisabled("Page %d/%d", g_itemSearchPage + 1, totalPages);
+        if (ImGui::Checkbox("Hide native chat", &g_hideNativeChatVisuals))
+            write_imgui_bool(kHideNativeChatKey, g_hideNativeChatVisuals);
         ImGui::SameLine();
-        if (ImGui::SmallButton("Clear All Filters##item_search"))
+        if (ImGui::SmallButton("Clear##parallel"))
         {
-            g_filterArmor = false;
-            g_filterWeapons = false;
-            g_filterAccessories = false;
-            g_filterLapis = false;
-            g_filterCapes = false;
-            g_filterMounts = false;
-            g_filterConsumables = false;
-            g_filterPets = false;
-            g_filterWings = false;
-            g_filterCostumes = false;
-            g_factionFilter = 0;
-            g_enableLevelFilter = false;
-            g_minLevel = 0;
-            g_maxLevel = 80;
-            g_hideUnnamedItems = false;
-            g_enableGradeFilter = false;
-            g_gradeFilter.fill('\0');
+            g_parallelHead = 0;
+            g_parallelCount = 0;
         }
-
-        if (ImGui::SmallButton("Prev##item_page") && g_itemSearchPage > 0)
-            --g_itemSearchPage;
         ImGui::SameLine();
-        if (ImGui::SmallButton("Next##item_page") && g_itemSearchPage + 1 < totalPages)
-            ++g_itemSearchPage;
+        ImGui::Checkbox("Auto-scroll", &g_parallelAutoScroll);
 
         ImGui::Separator();
-        ImGui::BeginChild("item_search_list", ImVec2(0.0f, 0.0f), true);
+        draw_parallel_color_controls();
+    }
 
-        if (totalResults == 0)
+    // -----------------------------------------------------------------------
+    // In-game chat overlay — renders upper + lower as standalone ImGui windows
+    // -----------------------------------------------------------------------
+    struct ChatPanelRuntimeState
+    {
+        float lastContentH = 0.0f;
+        bool layoutDirty = false;
+        bool dragging = false;
+        bool resizing = false;
+    };
+
+    static ChatPanelRuntimeState g_upperChatPanel{};
+    static ChatPanelRuntimeState g_lowerChatPanel{};
+
+    static ChatPanelRuntimeState& chat_panel_state(bool upper)
+    {
+        return upper ? g_upperChatPanel : g_lowerChatPanel;
+    }
+
+    // Only this top strip accepts mouse input. The message window itself is
+    // click-through so gameplay clicks below the strip keep reaching the client.
+    static void draw_ingame_chat_handle(const char* windowId, bool upper, const ImVec2& pos, const ImVec2& size)
+    {
+        using namespace imgui_layer;
+
+        auto& io = ImGui::GetIO();
+        auto& normPos = upper ? g_upperChatPosition : g_lowerChatPosition;
+        auto& normSize = upper ? g_upperChatSize : g_lowerChatSize;
+        auto& state = chat_panel_state(upper);
+
+        const float handleH = std::max(18.0f, ImGui::GetFrameHeight());
+        const float resizeW = std::clamp(size.x * 0.18f, 24.0f, 56.0f);
+        ImGui::SetNextWindowPos(pos, ImGuiCond_Always);
+        ImGui::SetNextWindowSize(ImVec2(size.x, handleH), ImGuiCond_Always);
+        const bool active = state.dragging || state.resizing;
+        ImGui::SetNextWindowBgAlpha(active ? 0.45f : 0.0f);
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, active ? 1.0f : 0.0f);
+        ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.08f, 0.08f, 0.10f, active ? 1.0f : 0.0f));
+        ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.0f, 0.0f, 0.0f, active ? 1.0f : 0.0f));
+
+        auto flags = ImGuiWindowFlags_NoTitleBar
+            | ImGuiWindowFlags_NoSavedSettings
+            | ImGuiWindowFlags_NoFocusOnAppearing
+            | ImGuiWindowFlags_NoBringToFrontOnFocus
+            | ImGuiWindowFlags_NoResize
+            | ImGuiWindowFlags_NoScrollbar
+            | ImGuiWindowFlags_NoScrollWithMouse;
+
+        if (ImGui::Begin(windowId, nullptr, flags))
         {
-            ImGui::TextDisabled("No items found.");
-            ImGui::EndChild();
+            ImGui::InvisibleButton("##move", ImVec2(size.x, handleH));
+            auto min = ImGui::GetItemRectMin();
+            auto max = ImGui::GetItemRectMax();
+            const bool hovered = ImGui::IsItemHovered();
+
+            if (ImGui::IsItemActivated())
+            {
+                const bool overResizeZone = io.MousePos.x >= max.x - resizeW;
+                state.resizing = overResizeZone;
+                state.dragging = !overResizeZone;
+            }
+            if (!ImGui::IsItemActive())
+            {
+                state.dragging = false;
+                state.resizing = false;
+            }
+
+            if ((state.dragging || state.resizing) && io.DisplaySize.x > 0.0f && io.DisplaySize.y > 0.0f)
+            {
+                if (state.resizing)
+                {
+                    const float minW = 180.0f / io.DisplaySize.x;
+                    const float minH = 80.0f / io.DisplaySize.y;
+                    normSize.x = std::clamp(normSize.x + io.MouseDelta.x / io.DisplaySize.x, minW, 1.0f - normPos.x);
+                    normSize.y = std::clamp(normSize.y + io.MouseDelta.y / io.DisplaySize.y, minH, 1.0f - normPos.y);
+                }
+                else
+                {
+                    normPos.x += io.MouseDelta.x / io.DisplaySize.x;
+                    normPos.y += io.MouseDelta.y / io.DisplaySize.y;
+                }
+                state.layoutDirty = true;
+            }
+
+            if (active || hovered)
+            {
+                auto* dl = ImGui::GetWindowDrawList();
+                const auto resizeMin = ImVec2(max.x - resizeW, min.y);
+                dl->AddRectFilled(min, max, IM_COL32(20, 20, 24, active ? 125 : 45), 0.0f);
+                dl->AddRectFilled(resizeMin, max, IM_COL32(230, 190, 70, state.resizing ? 115 : 55), 0.0f);
+                dl->AddRect(min, max, IM_COL32(0, 0, 0, active ? 180 : 90), 0.0f);
+                dl->AddLine(ImVec2(resizeMin.x, min.y + 3.0f), ImVec2(resizeMin.x, max.y - 3.0f),
+                    IM_COL32(255, 255, 255, 80), 1.0f);
+            }
+        }
+        ImGui::End();
+        ImGui::PopStyleColor(2);
+        ImGui::PopStyleVar(2);
+    }
+
+    // Draws the text surface for one parallel chat panel. Position is persisted
+    // in normalized screen coordinates so resolution changes keep it proportional.
+    static void draw_ingame_chat_window(const char* windowId, bool upper)
+    {
+        using namespace imgui_layer;
+
+        auto& io = ImGui::GetIO();
+        auto dw = io.DisplaySize.x;
+        auto dh = io.DisplaySize.y;
+        auto& normPos = upper ? g_upperChatPosition : g_lowerChatPosition;
+        auto& normSize = upper ? g_upperChatSize : g_lowerChatSize;
+        auto pos = ImVec2(normPos.x * dw, normPos.y * dh);
+        auto size = ImVec2(normSize.x * dw, normSize.y * dh);
+
+        bool mouseDown = ImGui::IsMouseDown(ImGuiMouseButton_Left);
+        auto& state = chat_panel_state(upper);
+        bool manipulating = state.dragging || state.resizing;
+
+        draw_ingame_chat_handle(upper ? "##UpperChatHandle" : "##LowerChatHandle", upper, pos, size);
+        pos = ImVec2(normPos.x * dw, normPos.y * dh);
+        size = ImVec2(normSize.x * dw, normSize.y * dh);
+
+        ImGui::SetNextWindowPos(pos, ImGuiCond_Always);
+        ImGui::SetNextWindowSize(size, ImGuiCond_Always);
+        ImGui::SetNextWindowBgAlpha(manipulating ? 0.45f : 0.0f);
+
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(g_chatTextIndent, 4.0f));
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, manipulating ? 1.0f : 0.0f);
+        ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.08f, 0.08f, 0.10f, manipulating ? 1.0f : 0.0f));
+        ImGui::PushStyleColor(ImGuiCol_TitleBg, ImVec4(0.10f, 0.10f, 0.12f, manipulating ? 1.0f : 0.0f));
+        ImGui::PushStyleColor(ImGuiCol_TitleBgActive, ImVec4(0.14f, 0.14f, 0.16f, manipulating ? 1.0f : 0.0f));
+        ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.0f, 0.0f, 0.0f, manipulating ? 1.0f : 0.0f));
+        ImGui::PushStyleColor(ImGuiCol_ResizeGrip, ImVec4(0.3f, 0.3f, 0.3f, manipulating ? 0.3f : 0.0f));
+        auto flags = ImGuiWindowFlags_NoSavedSettings
+            | ImGuiWindowFlags_NoFocusOnAppearing
+            | ImGuiWindowFlags_NoBringToFrontOnFocus
+            | ImGuiWindowFlags_NoCollapse
+            | ImGuiWindowFlags_NoScrollbar
+            | ImGuiWindowFlags_NoScrollWithMouse
+            | ImGuiWindowFlags_NoMove
+            | ImGuiWindowFlags_NoResize
+            | ImGuiWindowFlags_NoTitleBar
+            | ImGuiWindowFlags_NoMouseInputs;
+
+        if (!ImGui::Begin(windowId, nullptr, flags))
+        {
+            ImGui::End();
+            ImGui::PopStyleColor(5);
+            ImGui::PopStyleVar(2);
             return;
         }
 
-        auto start = g_itemSearchPage * kItemSearchPageSize;
-        auto end = std::min(start + kItemSearchPageSize, totalResults);
-        for (int i = start; i < end; ++i)
+        auto curPos = ImGui::GetWindowPos();
+        auto curSize = ImGui::GetWindowSize();
+
+        if (dw > 0.0f && dh > 0.0f)
         {
-            const auto& entry = g_itemEntries[filteredIndices[i]];
-            auto label = std::to_string(entry.itemId)
-                + "  |  " + entry.name
-                + "  |  Grade: " + std::to_string(entry.grade)
-                + "  |  Level: " + std::to_string(entry.level)
-                + "##item_search_" + std::to_string(entry.type) + "_" + std::to_string(entry.typeId);
-
-            if (ImGui::Selectable(label.c_str(), false))
-                send_getitem_type_typeid_to_chat(entry.type, entry.typeId);
-
-            if (ImGui::IsItemHovered())
+            ImVec2 newNormPos(curPos.x / dw, curPos.y / dh);
+            ImVec2 newNormSize(curSize.x / dw, curSize.y / dh);
+            if (newNormPos.x != normPos.x || newNormPos.y != normPos.y ||
+                newNormSize.x != normSize.x || newNormSize.y != normSize.y)
             {
-                ImGui::SetTooltip(
-                    "Name: %s\nItemID: %d\nType: %d\nTypeID: %d\nLevel: %d\nGrade: %d\nClick: /getitem %d %d 1",
-                    entry.name.c_str(),
-                    entry.itemId,
-                    entry.type,
-                    entry.typeId,
-                    entry.level,
-                    entry.grade,
-                    entry.type,
-                    entry.typeId);
+                normPos = newNormPos;
+                normSize = newNormSize;
+                state.layoutDirty = true;
             }
         }
+
+        if (state.layoutDirty && !mouseDown)
+        {
+            save_chat_window_layout();
+            state.layoutDirty = false;
+        }
+
+        ImGuiWindowFlags childFlags = ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoMouseInputs;
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
+        ImGui::BeginChild("##msgs", ImVec2(0, 0), false, childFlags);
+
+        // Bottom-align: push messages down so they grow upward like the native chat.
+        // Uses the previous frame's content height to compute how much top spacer is needed.
+        float availH = ImGui::GetContentRegionAvail().y;
+        float spacer = availH - state.lastContentH;
+        if (spacer > 0.0f)
+            ImGui::Dummy(ImVec2(1.0f, spacer));
+
+        float contentStartY = ImGui::GetCursorPosY();
+
+        // Render messages — show at most kMaxVisiblePerWindow per panel.
+        // First pass: count how many messages belong to this window type.
+        int start = (g_parallelCount < kMaxParallelMsgs) ? 0 : g_parallelHead;
+        int typeCount = 0;
+        for (int i = 0; i < g_parallelCount; ++i)
+        {
+            int idx = (start + i) % kMaxParallelMsgs;
+            if (is_upper_parallel_chat_type(g_parallelRing[idx].chatType) == upper)
+                ++typeCount;
+        }
+        int skip = (typeCount > kMaxVisiblePerWindow) ? typeCount - kMaxVisiblePerWindow : 0;
+
+        // Second pass: render, skipping the oldest excess messages.
+        int shown = 0, skipped = 0;
+        for (int i = 0; i < g_parallelCount; ++i)
+        {
+            int idx = (start + i) % kMaxParallelMsgs;
+            auto& msg = g_parallelRing[idx];
+            if (is_upper_parallel_chat_type(msg.chatType) != upper)
+                continue;
+            if (skipped < skip) { ++skipped; continue; }
+
+            draw_parallel_message_row(msg);
+            ++shown;
+        }
+
+        if (!shown)
+            ImGui::TextDisabled(upper ? "No system messages." : "No chat messages.");
+
+        // Update cached content height for next frame's bottom-align spacer
+        state.lastContentH = ImGui::GetCursorPosY() - contentStartY;
+
+        // --- Scroll handling (inside child) ---
+        float scrollY  = ImGui::GetScrollY();
+        float scrollMax = ImGui::GetScrollMaxY();
+
+        // Manual scroll via mouse wheel — works even in click-through mode
+        // because io.MouseWheel is global raw input, not gated by NoMouseInputs.
+        if (io.MouseWheel != 0.0f)
+        {
+            if (io.MousePos.x >= curPos.x && io.MousePos.x <= curPos.x + curSize.x &&
+                io.MousePos.y >= curPos.y && io.MousePos.y <= curPos.y + curSize.y)
+            {
+                float step = io.MouseWheel * ImGui::GetTextLineHeight() * 3.0f;
+                float target = scrollY - step;
+                ImGui::SetScrollY(std::clamp(target, 0.0f, std::max(0.0f, scrollMax)));
+                // Scrolling up disables auto-scroll; scrolling back to bottom re-enables it
+                if (io.MouseWheel > 0.0f)  // scrolling up
+                    g_parallelAutoScroll = false;
+                else if (scrollMax > 0.0f && target >= scrollMax - 1.0f)
+                    g_parallelAutoScroll = true;
+            }
+        }
+
+        // Re-enable auto-scroll if user is at the very bottom (e.g. after dragging scrollbar)
+        if (!g_parallelAutoScroll && scrollMax > 0.0f && scrollY >= scrollMax - 1.0f)
+            g_parallelAutoScroll = true;
+
+        // Auto-scroll — always keep at bottom when enabled
+        if (g_parallelAutoScroll)
+            ImGui::SetScrollHereY(1.0f);
+
+        // Read scroll state for custom scrollbar (may lag 1 frame — imperceptible)
+        scrollY  = ImGui::GetScrollY();
+        scrollMax = ImGui::GetScrollMaxY();
 
         ImGui::EndChild();
+        ImGui::PopStyleVar();  // child WindowPadding
+
+        // --- Custom left-side scrollbar, visible only while manipulating the window ---
+        if (manipulating)
+        {
+            constexpr float kBarW = 4.0f;
+            auto* dl = ImGui::GetWindowDrawList();
+            float headerH = ImGui::GetFrameHeight();
+            float tTop  = curPos.y + headerH + 2.0f;
+            float tBot  = curPos.y + curSize.y - 2.0f;
+            float tH    = tBot - tTop;
+
+            if (tH > 20.0f)
+            {
+                // Track background — always drawn
+                dl->AddRectFilled(
+                    ImVec2(curPos.x + 2.0f, tTop),
+                    ImVec2(curPos.x + 2.0f + kBarW, tBot),
+                    IM_COL32(255, 255, 255, 10), 2.0f);
+
+                // Thumb — full height when no overflow, proportional otherwise
+                float thumbH, thumbY;
+                if (scrollMax > 0.0f)
+                {
+                    float visRatio = tH / (scrollMax + tH);
+                    thumbH = std::max(12.0f, tH * visRatio);
+                    float sRatio = scrollY / scrollMax;
+                    thumbY = tTop + (tH - thumbH) * sRatio;
+                }
+                else
+                {
+                    thumbH = tH;    // full track = nothing to scroll
+                    thumbY = tTop;
+                }
+
+                dl->AddRectFilled(
+                    ImVec2(curPos.x + 2.0f, thumbY),
+                    ImVec2(curPos.x + 2.0f + kBarW, thumbY + thumbH),
+                    IM_COL32(180, 180, 180, 70), 2.0f);
+            }
+        }
+
+        ImGui::End();
+        ImGui::PopStyleColor(5);
+        ImGui::PopStyleVar(2);  // WindowPadding + WindowBorderSize
+    }
+
+    void render_ingame_chat()
+    {
+        using namespace imgui_layer;
+
+        if (!g_ingameChatActive || !g_parallelChatActive)
+            return;
+        if (!is_game_scene_stable())
+            return;
+
+        draw_ingame_chat_window("##UpperChatIngame", true);
+        draw_ingame_chat_window("##LowerChatIngame", false);
     }
 
     // -----------------------------------------------------------------------
@@ -940,367 +768,39 @@ namespace debug_panel
     {
         auto isDown = (GetAsyncKeyState(VK_F9) & 0x8000) != 0;
         if (isDown && !wasDown && is_admin())
-        {
-            auto newState = !g_showDebugPanel;
-            g_showDebugPanel = newState;
-            g_showEftBrowser = newState;
-        }
+            g_showDebugPanel = !g_showDebugPanel;
         wasDown = isDown;
-    }
-
-    struct ScreenPointEntry
-    {
-        LONG x;
-        LONG y;
-        DWORD tick;
-    };
-
-    static constexpr int kMaxScreenPointEntries = 64;
-    static ScreenPointEntry g_screenPointRing[kMaxScreenPointEntries]{};
-    static int g_screenPointHead = 0;
-    static int g_screenPointCount = 0;
-    static int g_selectedScreenPointIdx = -1;
-
-    static bool g_ctrlLmbCaptureEnabled = false;
-    static bool g_captureClicksOnUi = false;
-    static bool g_hasCapturedScreenPoint = false;
-    static POINT g_lastCapturedScreenPoint{};
-
-    static ImVec2 g_debugWindowPos{};
-    static ImVec2 g_debugWindowSize{};
-    static bool g_hasDebugWindowMetrics = false;
-
-    static ImVec2 g_eftWindowPos{};
-    static ImVec2 g_eftWindowSize{};
-    static bool g_hasEftWindowMetrics = false;
-
-    void draw_eft_browser()
-    {
-        ensure_eft_catalog_loaded();
-
-        ImGui::SetNextWindowSize(ImVec2(kEftBrowserW, kEftBrowserH), ImGuiCond_FirstUseEver);
-        auto flags = ImGuiWindowFlags_NoCollapse
-            | ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoBringToFrontOnFocus;
-
-        if (!ImGui::Begin("GM EFT Browser", &g_showEftBrowser, flags))
-        {
-            ImGui::End();
-            return;
-        }
-
-        g_eftWindowPos = ImGui::GetWindowPos();
-        g_eftWindowSize = ImGui::GetWindowSize();
-        g_hasEftWindowMetrics = true;
-
-        ImGui::Text("Archive EFT count: %d", static_cast<int>(g_eftEntries.size()));
-        ImGui::SameLine();
-        if (ImGui::SmallButton("Refresh##eft"))
-        {
-            g_eftCatalogLoaded = false;
-            g_eftEntries.clear();
-            g_selectedEftIndex = -1;
-            ensure_eft_catalog_loaded();
-        }
-
-        ImGui::InputTextWithHint("##eft_search", "Search .eft...", g_eftSearch.data(), g_eftSearch.size());
-
-        ImGui::Checkbox("Loop", &g_eftLoop);
-        ImGui::SameLine();
-        ImGui::SetNextItemWidth(100.0f);
-        ImGui::InputInt("Loop ms", &g_eftLoopMs, 100, 500);
-        if (g_eftLoopMs < 100)
-            g_eftLoopMs = 100;
-        else if (g_eftLoopMs > 10000)
-            g_eftLoopMs = 10000;
-
-        auto currentName = get_custom_eft_name_from_ui();
-        ImGui::TextDisabled("Current: %s", currentName && currentName[0] ? currentName : "(none)");
-        if (is_custom_eft_loop_enabled_from_ui())
-            ImGui::TextDisabled("Loop active: %u ms", get_custom_eft_loop_interval_from_ui());
-
-        const EftEntry* selectedEntry = nullptr;
-        if (g_selectedEftIndex >= 0 && g_selectedEftIndex < static_cast<int>(g_eftEntries.size()))
-            selectedEntry = &g_eftEntries[g_selectedEftIndex];
-
-        if (ImGui::Button("Play Selected##eft", ImVec2(130.0f, 0.0f)) && selectedEntry)
-            play_custom_eft_from_ui(selectedEntry->fileName.c_str(), g_eftLoop, static_cast<unsigned>(g_eftLoopMs));
-        ImGui::SameLine();
-        if (ImGui::Button("Stop##eft", ImVec2(90.0f, 0.0f)))
-            stop_custom_eft_from_ui();
-
-        ImGui::Separator();
-
-        auto search = to_lower_ascii(g_eftSearch.data());
-        ImGui::BeginChild("eft_list_child", ImVec2(0.0f, 0.0f), true);
-
-        if (!search.empty())
-        {
-            for (int i = 0; i < static_cast<int>(g_eftEntries.size()); ++i)
-            {
-                auto& entry = g_eftEntries[i];
-                if (!search.empty()
-                    && entry.lowerFileName.find(search) == std::string::npos
-                    && entry.path.find(search) == std::string::npos)
-                {
-                    continue;
-                }
-
-                auto selected = g_selectedEftIndex == i;
-                auto label = entry.fileName + "##eft_" + std::to_string(i);
-                if (ImGui::Selectable(label.c_str(), selected))
-                    g_selectedEftIndex = i;
-
-                if (ImGui::IsItemHovered())
-                    ImGui::SetTooltip("%s", entry.path.c_str());
-
-                if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
-                    play_custom_eft_from_ui(entry.fileName.c_str(), g_eftLoop, static_cast<unsigned>(g_eftLoopMs));
-            }
-        }
-        else
-        {
-            ImGuiListClipper clipper;
-            clipper.Begin(static_cast<int>(g_eftEntries.size()));
-            while (clipper.Step())
-            {
-                for (int i = clipper.DisplayStart; i < clipper.DisplayEnd; ++i)
-                {
-                    auto& entry = g_eftEntries[i];
-                    auto selected = g_selectedEftIndex == i;
-                    auto label = entry.fileName + "##eft_" + std::to_string(i);
-                    if (ImGui::Selectable(label.c_str(), selected))
-                        g_selectedEftIndex = i;
-
-                    if (ImGui::IsItemHovered())
-                        ImGui::SetTooltip("%s", entry.path.c_str());
-
-                    if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
-                        play_custom_eft_from_ui(entry.fileName.c_str(), g_eftLoop, static_cast<unsigned>(g_eftLoopMs));
-                }
-            }
-        }
-        ImGui::EndChild();
-        ImGui::End();
-    }
-
-    static void push_screen_point(LONG x, LONG y, DWORD tick)
-    {
-        auto& entry = g_screenPointRing[g_screenPointHead % kMaxScreenPointEntries];
-        entry.x = x;
-        entry.y = y;
-        entry.tick = tick;
-
-        g_screenPointHead = (g_screenPointHead + 1) % kMaxScreenPointEntries;
-        if (g_screenPointCount < kMaxScreenPointEntries)
-            ++g_screenPointCount;
-
-        g_selectedScreenPointIdx = (g_screenPointHead - 1 + kMaxScreenPointEntries) % kMaxScreenPointEntries;
-    }
-
-    static void clear_screen_points()
-    {
-        g_screenPointHead = 0;
-        g_screenPointCount = 0;
-        g_selectedScreenPointIdx = -1;
-    }
-
-    static void update_panel_entry_capture()
-    {
-        if (!g_ctrlLmbCaptureEnabled)
-            return;
-
-        auto& io = ImGui::GetIO();
-        if (!io.KeyCtrl || !ImGui::IsMouseClicked(ImGuiMouseButton_Left))
-            return;
-
-        if (!g_captureClicksOnUi && io.WantCaptureMouse)
-            return;
-
-        g_lastCapturedScreenPoint.x = static_cast<LONG>(io.MousePos.x);
-        g_lastCapturedScreenPoint.y = static_cast<LONG>(io.MousePos.y);
-        g_hasCapturedScreenPoint = true;
-
-        auto now = GetTickCount();
-        push_screen_point(g_lastCapturedScreenPoint.x, g_lastCapturedScreenPoint.y, now);
-
-        char message[96]{};
-        sprintf_s(message, "[gm-debug] Screen X:%ld Y:%ld", g_lastCapturedScreenPoint.x, g_lastCapturedScreenPoint.y);
-        Static::DrawText_ChatBox(ChatType::Notice26, message, 0);
-    }
-
-    static void draw_panel_entry_points()
-    {
-        ImGui::Checkbox("Enable Ctrl+LMB capture", &g_ctrlLmbCaptureEnabled);
-        ImGui::SameLine();
-        ImGui::Checkbox("Capture UI clicks", &g_captureClicksOnUi);
-        ImGui::TextDisabled("Hold Ctrl and left click to capture screen coordinates.");
-
-        if (g_hasCapturedScreenPoint)
-        {
-            ImGui::Text("Last captured: X=%ld Y=%ld", g_lastCapturedScreenPoint.x, g_lastCapturedScreenPoint.y);
-            ImGui::SameLine();
-            if (ImGui::SmallButton("Copy Last##screen_point"))
-            {
-                char value[64]{};
-                sprintf_s(value, "%ld, %ld", g_lastCapturedScreenPoint.x, g_lastCapturedScreenPoint.y);
-                ImGui::SetClipboardText(value);
-            }
-        }
-        else
-        {
-            ImGui::TextDisabled("No coordinates captured yet.");
-        }
-
-        ImGui::Separator();
-        ImGui::Text("Window metrics");
-
-        if (g_hasDebugWindowMetrics)
-            ImGui::Text("GM Debug  pos(%.0f, %.0f) size(%.0f, %.0f)", g_debugWindowPos.x, g_debugWindowPos.y, g_debugWindowSize.x, g_debugWindowSize.y);
-        if (g_hasEftWindowMetrics)
-            ImGui::Text("EFT Browser pos(%.0f, %.0f) size(%.0f, %.0f)", g_eftWindowPos.x, g_eftWindowPos.y, g_eftWindowSize.x, g_eftWindowSize.y);
-
-        if ((g_hasDebugWindowMetrics || g_hasEftWindowMetrics) && ImGui::SmallButton("Copy window metrics##panel"))
-        {
-            char value[192]{};
-            sprintf_s(
-                value,
-                "GM_Debug:{x:%.0f,y:%.0f,w:%.0f,h:%.0f} | EFT_Browser:{x:%.0f,y:%.0f,w:%.0f,h:%.0f}",
-                g_debugWindowPos.x,
-                g_debugWindowPos.y,
-                g_debugWindowSize.x,
-                g_debugWindowSize.y,
-                g_eftWindowPos.x,
-                g_eftWindowPos.y,
-                g_eftWindowSize.x,
-                g_eftWindowSize.y);
-            ImGui::SetClipboardText(value);
-        }
-
-        ImGui::Separator();
-        if (ImGui::SmallButton("Clear points##screen_points"))
-            clear_screen_points();
-
-        if (g_screenPointCount == 0)
-        {
-            ImGui::TextDisabled("No captured points in history.");
-            return;
-        }
-
-        ImGui::Columns(3, "screen_points_cols", true);
-        ImGui::SetColumnWidth(0, 120.0f);
-        ImGui::SetColumnWidth(1, 70.0f);
-        ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "Point");
-        ImGui::NextColumn();
-        ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "Ago");
-        ImGui::NextColumn();
-        ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "Actions");
-        ImGui::NextColumn();
-        ImGui::Separator();
-
-        auto now = GetTickCount();
-        for (int i = 0; i < g_screenPointCount; ++i)
-        {
-            auto idx = (g_screenPointHead - 1 - i + kMaxScreenPointEntries * 2) % kMaxScreenPointEntries;
-            auto& entry = g_screenPointRing[idx];
-
-            char pointLabel[64]{};
-            sprintf_s(pointLabel, "(%ld, %ld)##pt_%d", entry.x, entry.y, idx);
-            if (ImGui::Selectable(pointLabel, g_selectedScreenPointIdx == idx))
-                g_selectedScreenPointIdx = idx;
-            ImGui::NextColumn();
-
-            auto elapsed = now - entry.tick;
-            if (elapsed < 60000)
-                ImGui::Text("%us", elapsed / 1000);
-            else
-                ImGui::Text("%um%us", elapsed / 60000, (elapsed % 60000) / 1000);
-            ImGui::NextColumn();
-
-            char copyLabel[32]{};
-            sprintf_s(copyLabel, "Copy##pt_copy_%d", idx);
-            if (ImGui::SmallButton(copyLabel))
-            {
-                char value[64]{};
-                sprintf_s(value, "%ld, %ld", entry.x, entry.y);
-                ImGui::SetClipboardText(value);
-                g_selectedScreenPointIdx = idx;
-            }
-            ImGui::NextColumn();
-        }
-
-        ImGui::Columns(1);
-
-        if (g_selectedScreenPointIdx >= 0)
-        {
-            auto& selected = g_screenPointRing[g_selectedScreenPointIdx % kMaxScreenPointEntries];
-            if (ImGui::SmallButton("Copy selected##screen_point_selected"))
-            {
-                char value[64]{};
-                sprintf_s(value, "%ld, %ld", selected.x, selected.y);
-                ImGui::SetClipboardText(value);
-            }
-        }
     }
 
     void render()
     {
         toggle_if_f9(g_f9Down);
 
-        if (!is_admin())
+        if (!g_showDebugPanel || !is_admin())
             return;
 
-        update_panel_entry_capture();
+        ImGui::SetNextWindowSize(ImVec2(kPanelW, kPanelH), ImGuiCond_FirstUseEver);
+        auto flags = ImGuiWindowFlags_NoCollapse
+            | ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoBringToFrontOnFocus;
 
-        if (g_showDebugPanel)
+        if (!ImGui::Begin("GM Debug", &g_showDebugPanel, flags))
         {
-            ImGui::SetNextWindowSize(ImVec2(kPanelW, kPanelH), ImGuiCond_FirstUseEver);
-            auto flags = ImGuiWindowFlags_NoCollapse
-                | ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoBringToFrontOnFocus;
-
-            if (!ImGui::Begin("GM Debug", &g_showDebugPanel, flags))
-            {
-                ImGui::End();
-            }
-            else
-            {
-                g_debugWindowPos = ImGui::GetWindowPos();
-                g_debugWindowSize = ImGui::GetWindowSize();
-                g_hasDebugWindowMetrics = true;
-
-                if (ImGui::BeginTabBar("gm_debug_tabs"))
-                {
-                    if (ImGui::BeginTabItem("Chat Type Monitor"))
-                    {
-                        draw_chat_monitor();
-                        ImGui::EndTabItem();
-                    }
-
-                    if (ImGui::BeginTabItem("GM Commands"))
-                    {
-                        draw_gm_commands();
-                        ImGui::EndTabItem();
-                    }
-
-                    if (ImGui::BeginTabItem("Item Search"))
-                    {
-                        draw_item_search();
-                        ImGui::EndTabItem();
-                    }
-
-                    if (ImGui::BeginTabItem("Panel entry points"))
-                    {
-                        draw_panel_entry_points();
-                        ImGui::EndTabItem();
-                    }
-
-                    ImGui::EndTabBar();
-                }
-
-                ImGui::End();
-            }
+            ImGui::End();
+            return;
         }
 
-        if (g_showEftBrowser)
-            draw_eft_browser();
+        // --- Global GM toggles ---
+        {
+            using namespace imgui_layer;
+            if (ImGui::Checkbox("ID View", &g_idViewEnabled))
+                write_imgui_bool(kIdViewEnabledKey, g_idViewEnabled);
+            ImGui::SameLine();
+            ImGui::TextDisabled("(mob/NPC IDs)");
+        }
+        ImGui::Separator();
+        if (ImGui::CollapsingHeader("Chat options", ImGuiTreeNodeFlags_DefaultOpen))
+            draw_parallel_chat();
+
+        ImGui::End();
     }
 }
