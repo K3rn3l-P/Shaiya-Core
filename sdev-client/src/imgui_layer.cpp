@@ -1,4 +1,5 @@
 #include "include/imgui_layer_internal.h"
+#include "include/custom_gm_panel.h"
 #include "include/debug_panel.h"
 #include "include/shaiya/RewardItemEvent.h"
 #include "include/shaiya/Roulette.h"
@@ -631,6 +632,7 @@ namespace imgui_layer
             draw_npc_button_overlay();
         }
 
+        custom_gm_panel::render();
         debug_panel::render();
         debug_panel::render_ingame_chat();
 

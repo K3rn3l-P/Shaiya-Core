@@ -254,6 +254,12 @@
     <ClInclude Include="..\external\imgui\backends\imgui_impl_win32.h">
       <Filter>include</Filter>
     </ClInclude>
+    <ClInclude Include="src\include\imgui_layer_internal.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="src\include\custom_gm_panel.h">
+      <Filter>include</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\dllmain.cpp">
@@ -443,6 +449,30 @@
       <Filter>src</Filter>
     </ClCompile>
     <ClCompile Include="src\stb_image_impl.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\imgui_layer_asm.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\imgui_layer_chatoptions.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\imgui_layer_emoji.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\imgui_layer_items.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\imgui_layer_roulette.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\imgui_layer_reward.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\imgui_layer_settings.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\custom_gm_panel.cpp">
       <Filter>src</Filter>
     </ClCompile>
   </ItemGroup>
