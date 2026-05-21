@@ -87,9 +87,9 @@ namespace imgui_layer
             void* orig = nullptr;
             if (hook_vtable(m->device, 9, reinterpret_cast<void*>(hooked_mouse_get_device_state), &orig) && orig)
                 *outOriginal = reinterpret_cast<GetDeviceStateFn>(orig);
-        };
+            };
 
-        hookDevice(g_var->input.mouse,  &g_originalMouseGetDeviceState);
+        hookDevice(g_var->input.mouse, &g_originalMouseGetDeviceState);
         hookDevice(g_var->input.mouse2, &g_originalMouse2GetDeviceState);
 
         // If both devices share the same vtable (common), mouse2 hook
@@ -221,7 +221,7 @@ namespace imgui_layer
         auto textSize = ImGui::CalcTextSize(label);
         drawList->AddText(
             ImVec2(min.x + (max.x - min.x - textSize.x) * 0.5f,
-                   min.y + (max.y - min.y - textSize.y) * 0.5f),
+                min.y + (max.y - min.y - textSize.y) * 0.5f),
             tint,
             label);
     }
@@ -451,6 +451,7 @@ namespace imgui_layer
     {
         release_emoji_textures();
         release_item_icon_textures();
+        release_battleground_map_textures();
         release_texture(g_rouletteBgTexture, g_rouletteBgLoadAttempted);
         release_texture(g_rewardIconTexture, g_rewardIconLoadAttempted);
         release_texture(g_rouletteIconTexture, g_rouletteIconLoadAttempted);
@@ -546,8 +547,8 @@ namespace imgui_layer
             auto& io = ImGui::GetIO();
             float winW = io.DisplaySize.x;
             float winH = io.DisplaySize.y;
-            float bbW  = static_cast<float>(g_var->client.width);
-            float bbH  = static_cast<float>(g_var->client.height);
+            float bbW = static_cast<float>(g_var->client.width);
+            float bbH = static_cast<float>(g_var->client.height);
 
             if (bbW > 0.0f && bbH > 0.0f)
             {
@@ -570,7 +571,7 @@ namespace imgui_layer
                         ::ScreenToClient(g_var->hwnd, &pt))
                     {
                         io.AddMousePosEvent(pt.x * g_mouseScaleX,
-                                            pt.y * g_mouseScaleY);
+                            pt.y * g_mouseScaleY);
                     }
                 }
                 else
@@ -611,6 +612,7 @@ namespace imgui_layer
         g_settingsPanelRect = {};
         g_npcButtonRect = {};
         g_npcPanelRect = {};
+        g_battlegroundPanelRect = {};
         ensure_emoji_catalog_loaded();
 
         if (g_emojisEnabled)
@@ -648,6 +650,11 @@ namespace imgui_layer
             }
             draw_settings_panel();
             draw_npc_panel();
+            draw_battleground_panel();
+        }
+        else
+        {
+            g_showBattlegroundPanel = false;
         }
 
         ImGui::EndFrame();

@@ -16,20 +16,32 @@ using namespace shaiya;
 
 namespace packet_main_interface
 {
-    void handler_0x233(CUser* user)
+    void handler_0x233(CUser* user, GameMovePvPZoneIncoming* incoming)
     {
         // Battleground buttons.
-        // The client only requests the move; the server decides the valid
-        // battlefield by level and family, then uses the same 5s cast movement
-        // path as town move scrolls. Debuffs intentionally do not block this.
+        // The client selects an entry id; the server validates level/family
+        // and uses the same 5s cast movement path as town move scrolls.
+        // Debuffs intentionally do not block this.
         if (user->status == UserStatus::Death)
             return;
 
         if (user->logoutTime)
             return;
 
-        auto it = std::ranges::find_if(g_battlefieldMoveData, BattlefieldLvInRange(user->level));
+        auto it = g_battlefieldMoveData.end();
+        if (incoming && incoming->destinationId != 0)
+            it = std::ranges::find_if(g_battlefieldMoveData, BattlefieldIdEquals(incoming->destinationId));
+
         if (it == g_battlefieldMoveData.end())
+            it = std::ranges::find_if(g_battlefieldMoveData, BattlefieldLvInRange(user->level));
+
+        if (it == g_battlefieldMoveData.end())
+            return;
+
+        if (!it->enabled)
+            return;
+
+        if (user->level < it->levelMin || user->level > it->levelMax)
             return;
 
         auto family = std::clamp(static_cast<int>(user->family), 0, 3);
@@ -58,7 +70,7 @@ namespace packet_main_interface
         switch (packet->opcode)
         {
         case 0x233:
-            handler_0x233(user);
+            handler_0x233(user, reinterpret_cast<GameMovePvPZoneIncoming*>(packet));
             break;
         default:
             SConnection::Close(user, 9, 0);
@@ -77,7 +89,7 @@ void __declspec(naked) naked_0x47798E()
         push ebx // packet
         push ebp // user
         call packet_main_interface::handler
-        add esp,0x8
+        add esp, 0x8
 
         popad
 

@@ -187,24 +187,26 @@ void Configuration::LoadBattlefieldMoveData()
                 continue;
 
             BattlefieldMoveInfo info{};
+            info.id = static_cast<int>(util::ini::get_value(section.c_str(), L"ID", num, path));
             info.levelMin = static_cast<int>(util::ini::get_value(section.c_str(), L"LEVEL_MIN", 0, path));
             info.levelMax = static_cast<int>(util::ini::get_value(section.c_str(), L"LEVEL_MAX", 0, path));
+            info.enabled = static_cast<int>(util::ini::get_value(section.c_str(), L"ENABLED", 1, path));
 
             auto readPos = [&](int index, const wchar_t* prefix)
-            {
-                auto keyX = std::format(L"{}_POSX", prefix);
-                auto keyY = std::format(L"{}_POSY", prefix);
-                auto keyZ = std::format(L"{}_POSZ", prefix);
+                {
+                    auto keyX = std::format(L"{}_POSX", prefix);
+                    auto keyY = std::format(L"{}_POSY", prefix);
+                    auto keyZ = std::format(L"{}_POSZ", prefix);
 
-                auto x = util::ini::get_value(section.c_str(), keyX.c_str(), L"", path);
-                auto y = util::ini::get_value(section.c_str(), keyY.c_str(), L"", path);
-                auto z = util::ini::get_value(section.c_str(), keyZ.c_str(), L"", path);
+                    auto x = util::ini::get_value(section.c_str(), keyX.c_str(), L"", path);
+                    auto y = util::ini::get_value(section.c_str(), keyY.c_str(), L"", path);
+                    auto z = util::ini::get_value(section.c_str(), keyZ.c_str(), L"", path);
 
-                info.mapPos[index].mapId = mapId;
-                info.mapPos[index].x = std::stof(x);
-                info.mapPos[index].y = std::stof(y);
-                info.mapPos[index].z = std::stof(z);
-            };
+                    info.mapPos[index].mapId = mapId;
+                    info.mapPos[index].x = std::stof(x);
+                    info.mapPos[index].y = std::stof(y);
+                    info.mapPos[index].z = std::stof(z);
+                };
 
             readPos(0, L"HU");
             readPos(1, L"EL");
@@ -483,14 +485,14 @@ void Configuration::LoadRoulette()
             return;
 
         auto parse_item_id = [](int itemId, int& outType, int& outTypeId) -> bool
-        {
-            if (itemId <= 0)
-                return false;
+            {
+                if (itemId <= 0)
+                    return false;
 
-            outType = itemId / 1000;
-            outTypeId = itemId % 1000;
-            return std::in_range<uint8_t>(outType) && std::in_range<uint8_t>(outTypeId);
-        };
+                outType = itemId / 1000;
+                outTypeId = itemId % 1000;
+                return std::in_range<uint8_t>(outType) && std::in_range<uint8_t>(outTypeId);
+            };
 
         int tokenItemId = static_cast<int>(util::ini::get_value(L"Info", L"TokenItemID", 0, path));
         int tokenCount = static_cast<int>(util::ini::get_value(L"Info", L"TokenCount", 1, path));

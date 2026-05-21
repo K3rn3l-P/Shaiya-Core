@@ -92,6 +92,9 @@ namespace imgui_layer
     constexpr const char* kNpcPanelYKey = "NPC_PANEL_Y";
     constexpr auto kNpcButtonSize = ImVec2(32.0f, 33.0f);
     constexpr auto kNpcPanelSize = ImVec2(210.0f, 270.0f);
+    constexpr const char* kBattlegroundPanelXKey = "BATTLEFIELD_PANEL_X";
+    constexpr const char* kBattlegroundPanelYKey = "BATTLEFIELD_PANEL_Y";
+    constexpr auto kBattlegroundPanelSize = ImVec2(722.0f, 458.0f);
     // In-game chat overlay persistence keys
     constexpr const char* kIngameChatActiveKey = "INGAME_CHAT_ACTIVE";
     constexpr const char* kParallelChatActiveKey = "PARALLEL_CHAT_ACTIVE";
@@ -148,6 +151,7 @@ namespace imgui_layer
     inline RECT g_settingsPanelRect{};
     inline RECT g_npcButtonRect{};
     inline RECT g_npcPanelRect{};
+    inline RECT g_battlegroundPanelRect{};
 
     // Per-element positions
     inline ImVec2 g_panelPosition = ImVec2(80.0f, 80.0f);
@@ -160,6 +164,7 @@ namespace imgui_layer
     inline ImVec2 g_settingsPanelPosition = ImVec2(-1.0f, -1.0f);
     inline ImVec2 g_npcButtonPosition = kDefaultNpcButtonPosition;
     inline ImVec2 g_npcPanelPosition = ImVec2(-1.0f, -1.0f);
+    inline ImVec2 g_battlegroundPanelPosition = ImVec2(-1.0f, -1.0f);
     // In-game parallel chat overlay
     // Positions are normalized 0.0–1.0 of DisplaySize.  Horizontal pos and
     // all sizes are fixed; only the vertical offset is user-adjustable.
@@ -213,6 +218,23 @@ namespace imgui_layer
     inline bool g_rollMouseWasDown = false;
     inline bool g_showSettingsPanel = false;
     inline bool g_showNpcPanel = false;
+    inline bool g_showBattlegroundPanel = false;
+    inline int g_battlegroundPage = 0;
+
+    struct BattlegroundClientEntry
+    {
+        int id = 0;
+        int mapId = -1;
+        int levelMin = 0;
+        int levelMax = 0;
+        bool enabled = true;
+        std::string title;
+        std::string subtitle;
+        std::string tag;
+    };
+
+    inline std::vector<BattlegroundClientEntry> g_battlegroundEntries;
+    inline bool g_battlegroundEntriesLoaded = false;
 
     // Reward bar state
     constexpr const char* kRewardAutoClaimKey = "REWARD_AUTOCLAIM";
@@ -247,6 +269,24 @@ namespace imgui_layer
     inline uint64_t g_npcIconDataSize = 0;
     inline bool g_npcIconFound = false;
     inline bool g_npcIconLoadAttempted = false;
+
+    struct BattlegroundMapTexture
+    {
+        uint64_t dataOffset = 0;
+        uint64_t dataSize = 0;
+        bool found = false;
+        bool lookupAttempted = false;
+        bool loadAttempted = false;
+        LPDIRECT3DTEXTURE9 texture = nullptr;
+    };
+
+    inline std::unordered_map<int, BattlegroundMapTexture> g_battlegroundMapTextures;
+    inline std::unordered_map<int, BattlegroundMapTexture> g_battlegroundCurrentMapTextures;
+    inline std::unordered_map<int, BattlegroundMapTexture> g_battlegroundDisabledMapTextures;
+    inline BattlegroundMapTexture g_battlegroundBackgroundTexture;
+    inline BattlegroundMapTexture g_battlegroundCloseButtonTexture;
+    inline BattlegroundMapTexture g_battlegroundPrevButtonTexture;
+    inline BattlegroundMapTexture g_battlegroundNextButtonTexture;
 
     // Roulette panel layout
     constexpr float kRollButtonOffsetX = -1.0f;
@@ -391,8 +431,8 @@ namespace imgui_layer
     inline int g_chatScrollOffset = 0;
 
     // SAH folder constants
-    constexpr const char* kEmojiSahFolder   = "assets\\emojis";
-    constexpr const char* kGifSahFolder     = "assets\\gifs";
+    constexpr const char* kEmojiSahFolder = "assets\\emojis";
+    constexpr const char* kGifSahFolder = "assets\\gifs";
     constexpr const char* kGeneralSahFolder = "assets\\general";
     constexpr PROPID kGdiplusFrameDelayProperty = 0x5100;
 
@@ -416,6 +456,8 @@ namespace imgui_layer
     void draw_settings_button_overlay();
     void draw_npc_panel();
     void draw_npc_button_overlay();
+    void draw_battleground_panel();
+    void release_battleground_map_textures();
 
     // imgui_layer_items.cpp
     int count_inventory_item(uint8_t type, uint8_t typeId);

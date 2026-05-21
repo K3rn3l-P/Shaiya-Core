@@ -1,9 +1,3 @@
-#include <array>
-#include <filesystem>
-#include <format>
-#include <ranges>
-#include <string>
-#include <vector>
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <util/util.h>
@@ -11,110 +5,29 @@
 #include "include/main.h"
 #include "include/config.h"
 #include "include/shaiya/CButton.h"
-#include "include/shaiya/CMessage.h"
 #include "include/shaiya/CNetwork.h"
-#include "include/shaiya/CPlayerData.h"
 #include "include/shaiya/Static.h"
 #include "include/shaiya/CWindow.h"
 using namespace shaiya;
 
 namespace
 {
-    struct BattlefieldMoveInfo
-    {
-        int mapId;
-        int levelMin;
-        int levelMax;
-    };
-
     constexpr int kButtonX = 38;
     constexpr int kButtonY = 78;
     constexpr int kCustomUiButtonYOffset = -22;
     constexpr int kButtonWidth = 165;
     constexpr int kButtonHeight = 47;
 
-    std::vector<BattlefieldMoveInfo> g_battlefieldMoveData;
-    bool g_battlefieldMoveDataLoaded = false;
     bool g_buttonInitialized = false;
     bool g_mouseWasDown = false;
     bool g_buttonPressStartedInside = false;
+    DWORD g_lastBattlegroundConfigWarningTick = 0;
     CButton g_battlefieldButton{};
-    CMessage* g_message = nullptr;
     D2D_POINT_2U g_anchor{};
-
-    std::filesystem::path get_client_root()
-    {
-        std::wstring buffer(MAX_PATH, L'\0');
-        auto count = GetModuleFileNameW(nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
-        buffer.resize(count);
-        return std::filesystem::path(buffer).remove_filename();
-    }
 
     int get_button_y_offset()
     {
         return config::load_custom_ui() == 1 ? kCustomUiButtonYOffset : 0;
-    }
-
-    std::filesystem::path find_battlefield_client_ini()
-    {
-        auto root = get_client_root();
-        std::filesystem::path candidates[]
-        {
-            root / L"BattleFieldMoveInfo_Client.ini",
-            root / L"Data" / L"BattleFieldMoveInfo_Client.ini",
-            root / L"data" / L"BattleFieldMoveInfo_Client.ini",
-        };
-
-        for (const auto& path : candidates)
-        {
-            if (std::filesystem::exists(path))
-                return path;
-        }
-
-        return {};
-    }
-
-    void load_battlefield_move_data()
-    {
-        if (g_battlefieldMoveDataLoaded)
-            return;
-
-        g_battlefieldMoveDataLoaded = true;
-        g_battlefieldMoveData.clear();
-
-        auto path = find_battlefield_client_ini();
-        if (path.empty())
-            return;
-
-        auto count = static_cast<int>(GetPrivateProfileIntW(L"BATTLEFIELD_INFO", L"BATTLEFIELD_COUNT", 0, path.c_str()));
-        if (count <= 0)
-            return;
-
-        g_battlefieldMoveData.reserve(count);
-        for (int i = 1; i <= count; ++i)
-        {
-            auto section = std::format(L"BATTLEFIELD_{}", i);
-            auto mapId = GetPrivateProfileIntW(section.c_str(), L"MAP_NO", -1, path.c_str());
-            if (mapId < 0)
-                continue;
-
-            BattlefieldMoveInfo info{};
-            info.mapId = mapId;
-            info.levelMin = GetPrivateProfileIntW(section.c_str(), L"LEVEL_MIN", 0, path.c_str());
-            info.levelMax = GetPrivateProfileIntW(section.c_str(), L"LEVEL_MAX", 0, path.c_str());
-            g_battlefieldMoveData.push_back(info);
-        }
-    }
-
-    int get_battlefield_map_id_for_level(int level)
-    {
-        load_battlefield_move_data();
-
-        auto it = std::ranges::find_if(g_battlefieldMoveData, [level](const auto& info) {
-            return level >= info.levelMin && level <= info.levelMax;
-        });
-
-        return it == g_battlefieldMoveData.end() ? -1 : it->mapId;
     }
 
     void init_battlefield_button()
@@ -134,8 +47,6 @@ namespace
             0.0F, 1.0F, 0.5F, 0.75F,
             0.0F, 1.0F, 0.75F, 1.0F,
             0);
-
-        load_battlefield_move_data();
         g_buttonInitialized = true;
     }
 
@@ -155,58 +66,32 @@ namespace
             cursor.y >= y && cursor.y <= y + kButtonHeight;
     }
 
-    void close_battlefield_message()
+    void show_battleground_panel_unavailable_warning()
     {
-        if (!g_message)
+        auto now = GetTickCount();
+        if (g_lastBattlegroundConfigWarningTick != 0 && now - g_lastBattlegroundConfigWarningTick < 3000)
             return;
 
-        CMessage::Hide(g_message);
-        Static::operator_delete(g_message);
-        g_message = nullptr;
+        g_lastBattlegroundConfigWarningTick = now;
+        MessageBoxA(
+            g_var->hwnd,
+            "Battleground panel could not be opened.\n\n"
+            "BattleFieldMoveInfo_Client.ini was not found or contains no valid entries.\n"
+            "The file must exist beside Game.exe or inside the client's Data folder.\n\n"
+            "Also make sure the server/client battleground INI files use real map IDs and coordinates.",
+            "Battleground",
+            MB_OK | MB_ICONWARNING);
     }
 
-    void open_battlefield_confirm()
+    void handle_battlefield_button_click()
     {
-        if (g_message)
-            return;
-
-        auto block = Static::operator_new(sizeof(CMessage));
-        if (!block)
-            return;
-
-        std::array<char, 256> mapName{};
-        auto mapId = get_battlefield_map_id_for_level(g_pPlayerData->level);
-        if (mapId != -1)
-            CPlayerData::GetMapName(mapName.data(), mapId);
-        else
-            strcpy_s(mapName.data(), mapName.size(), "Battleground");
-
-        auto text = std::format("{}\n{}", mapName.data(), Static::GetMsg(514));
-        g_message = CMessage::Init(block, MB_OKCANCEL, 255, 255, 255, text.c_str(), 0);
-    }
-
-    void handle_battlefield_message()
-    {
-        if (!g_message)
-            return;
-
-        CMessage::Show(g_message);
-
-        switch (CMessage::DialogResult(g_message))
+        if (is_battleground_panel_available())
         {
-        case IDOK:
-        {
-            GameMovePvPZoneIncoming outgoing{};
-            CNetwork::Send(&outgoing, sizeof(outgoing));
-            close_battlefield_message();
-            break;
+            toggle_battleground_panel();
+            return;
         }
-        case IDCANCEL:
-            close_battlefield_message();
-            break;
-        default:
-            break;
-        }
+
+        show_battleground_panel_unavailable_warning();
     }
 
     void draw_battlefield_button(CWindow* window)
@@ -228,13 +113,12 @@ namespace
             g_buttonPressStartedInside = cursorOverButton;
 
         if (!mouseDown && g_mouseWasDown && g_buttonPressStartedInside && cursorOverButton)
-            open_battlefield_confirm();
+            handle_battlefield_button_click();
 
         if (!mouseDown)
             g_buttonPressStartedInside = false;
 
         g_mouseWasDown = mouseDown;
-        handle_battlefield_message();
     }
 
     unsigned u0x532A2A = 0x532A2A;
@@ -245,10 +129,10 @@ namespace
             pushad
             push esi
             call draw_battlefield_button
-            add esp,0x4
+            add esp, 0x4
             popad
 
-            mov ecx,[esp+0x108]
+            mov ecx, [esp + 0x108]
             jmp u0x532A2A
         }
     }
@@ -259,11 +143,11 @@ namespace
         __asm
         {
             pushad
-            call close_battlefield_message
+            call close_battleground_panel
             popad
 
-            mov eax,[esi+0x40]
-            xor edi,edi
+            mov eax, [esi + 0x40]
+            xor edi, edi
             jmp u0x5320F3
         }
     }

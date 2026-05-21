@@ -6,14 +6,16 @@
 
 namespace shaiya
 {
-    #pragma pack(push, 1)
+#pragma pack(push, 1)
     struct BattlefieldMoveInfo
     {
+        int32_t id;
         int32_t levelMin;
         int32_t levelMax;
+        int32_t enabled;
         std::array<MapPos, 4> mapPos;
     };
-    #pragma pack(pop)
+#pragma pack(pop)
 
     struct BattlefieldLvInRange
     {
@@ -28,6 +30,21 @@ namespace shaiya
         }
 
         int level;
+    };
+
+    struct BattlefieldIdEquals
+    {
+        explicit BattlefieldIdEquals(int id)
+            : id(id)
+        {
+        }
+
+        bool operator()(const BattlefieldMoveInfo& info) const
+        {
+            return info.id == id;
+        }
+
+        int id;
     };
 
     inline std::vector<BattlefieldMoveInfo> g_battlefieldMoveData;
