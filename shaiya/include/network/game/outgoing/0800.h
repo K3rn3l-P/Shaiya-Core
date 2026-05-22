@@ -7,8 +7,10 @@
 namespace shaiya
 {
     inline constexpr std::size_t kGameRouletteMaxRewards = 20;
+    inline constexpr std::size_t kGameRouletteRecentWinnerCount = 5;
+    inline constexpr std::size_t kGameRouletteWinnerNameLength = 21;
 
-    #pragma pack(push, 1)
+#pragma pack(push, 1)
     // TP_CLOAK_ADD
     struct GameCloakInfoAddOutgoing
     {
@@ -19,9 +21,9 @@ namespace shaiya
         CloakInfo cloakInfo;
         uint32_t money;
     };
-    #pragma pack(pop)
+#pragma pack(pop)
 
-    #pragma pack(push, 1)
+#pragma pack(push, 1)
     // TP_CLOAK_REM
     struct GameCloakInfoRemoveOutgoing
     {
@@ -29,7 +31,7 @@ namespace shaiya
         uint8_t bag;
         uint8_t slot;
     };
-    #pragma pack(pop)
+#pragma pack(pop)
 
     enum struct GameLapisianAddResult : uint8_t
     {
@@ -37,7 +39,7 @@ namespace shaiya
         Success
     };
 
-    #pragma pack(push, 1)
+#pragma pack(push, 1)
     // TP_LAPISIAN_ADD
     struct GameLapisianAddOutgoing
     {
@@ -54,7 +56,7 @@ namespace shaiya
         uint32_t money;
         CraftName craftName;
     };
-    #pragma pack(pop)
+#pragma pack(pop)
 
     enum struct GameItemComposeResult : uint8_t
     {
@@ -62,7 +64,7 @@ namespace shaiya
         Failure
     };
 
-    #pragma pack(push, 1)
+#pragma pack(push, 1)
     // TP_ITEM_COMPOSE
     struct GameItemComposeOutgoing
     {
@@ -72,7 +74,7 @@ namespace shaiya
         uint8_t slot;
         CraftName craftName;
     };
-    #pragma pack(pop)
+#pragma pack(pop)
 
     enum struct GameItemRemakeResult : uint8_t
     {
@@ -82,7 +84,7 @@ namespace shaiya
         Failure_MakeTypeB,
     };
 
-    #pragma pack(push, 1)
+#pragma pack(push, 1)
     // TPC_ITEM_REMAKE
     struct GameItemRemakeOutgoing
     {
@@ -90,33 +92,33 @@ namespace shaiya
         GameItemRemakeResult result;
         ItemUnit newItem;
     };
-    #pragma pack(pop)
+#pragma pack(pop)
 
-    #pragma pack(push, 1)
+#pragma pack(push, 1)
     struct GameItemRemake2Outgoing
     {
         uint16_t opcode{ 0x808 };
         GameItemRemakeResult result;
     };
-    #pragma pack(pop)
+#pragma pack(pop)
 
-    #pragma pack(push, 1)
+#pragma pack(push, 1)
     struct GameItemRemake5Outgoing
     {
         uint16_t opcode{ 0x80B };
         GameItemRemakeResult result;
         ItemUnit newItem;
     };
-    #pragma pack(pop)
+#pragma pack(pop)
 
-    #pragma pack(push, 1)
+#pragma pack(push, 1)
     struct GameItemRemake4Outgoing
     {
         uint16_t opcode{ 0x80C };
         GameItemRemakeResult result;
         ItemUnit newItem;
     };
-    #pragma pack(pop)
+#pragma pack(pop)
 
     enum struct GameRuneUpgradeResult : uint8_t
     {
@@ -125,14 +127,14 @@ namespace shaiya
         Failure
     };
 
-    #pragma pack(push, 1)
+#pragma pack(push, 1)
     struct GameRuneUpgradeOutgoing
     {
         uint16_t opcode{ 0x80D };
         GameRuneUpgradeResult result;
         ItemUnit newItem;
     };
-    #pragma pack(pop)
+#pragma pack(pop)
 
     enum struct GameLapisianUpgradeResult : uint8_t
     {
@@ -142,14 +144,14 @@ namespace shaiya
         Unknown3,
     };
 
-    #pragma pack(push, 1)
+#pragma pack(push, 1)
     struct GameLapisianUpgradeOutgoing
     {
         uint16_t opcode{ 0x80E };
         GameLapisianUpgradeResult result;
         ItemUnit newItem;
     };
-    #pragma pack(pop)
+#pragma pack(pop)
 
     enum struct GameItemAbilityTransferResult : uint8_t
     {
@@ -157,7 +159,7 @@ namespace shaiya
         Failure
     };
 
-    #pragma pack(push, 1)
+#pragma pack(push, 1)
     struct GameItemAbilityTransferOutgoing
     {
         uint16_t opcode{ 0x811 };
@@ -167,9 +169,9 @@ namespace shaiya
         uint8_t destBag;
         uint8_t destSlot;
     };
-    #pragma pack(pop)
+#pragma pack(pop)
 
-    #pragma pack(push, 1)
+#pragma pack(push, 1)
     struct GameChaoticSquareListOutgoing
     {
         uint16_t opcode{ 0x830 };
@@ -177,9 +179,9 @@ namespace shaiya
         Array<uint8_t, 10> newItemTypeId;
         uint32_t goldPerPercentage;
     };
-    #pragma pack(pop)
+#pragma pack(pop)
 
-    #pragma pack(push, 1)
+#pragma pack(push, 1)
     struct GameItemSynthesisRecipeOutgoing
     {
         uint16_t opcode{ 0x831 };
@@ -192,7 +194,7 @@ namespace shaiya
         Array<uint8_t, 24> materialCount;
         uint8_t newItemCount;
     };
-    #pragma pack(pop)
+#pragma pack(pop)
 
     enum struct GameItemSynthesisResult : uint8_t
     {
@@ -200,21 +202,21 @@ namespace shaiya
         Failure
     };
 
-    #pragma pack(push, 1)
+#pragma pack(push, 1)
     struct GameItemSynthesisOutgoing
     {
         uint16_t opcode{ 0x832 };
         GameItemSynthesisResult result;
     };
-    #pragma pack(pop)
+#pragma pack(pop)
 
-    #pragma pack(push, 1)
+#pragma pack(push, 1)
     struct GameItemFreeSynthesisOutgoing
     {
         uint16_t opcode{ 0x833 };
         GameItemSynthesisResult result;
     };
-    #pragma pack(pop)
+#pragma pack(pop)
 
     enum struct GameRouletteResult : uint8_t
     {
@@ -226,7 +228,7 @@ namespace shaiya
         NotConfigured,
     };
 
-    #pragma pack(push, 1)
+#pragma pack(push, 1)
     struct GameRouletteListOutgoing
     {
         uint16_t opcode{ 0x834 };
@@ -238,10 +240,18 @@ namespace shaiya
         Array<uint8_t, kGameRouletteMaxRewards> rewardTypeId;
         Array<uint8_t, kGameRouletteMaxRewards> rewardCount;
         Array<uint16_t, kGameRouletteMaxRewards> rewardChance;
+        uint8_t featuredRewardIndex;
+        uint8_t guaranteedRewardIndex;
+        uint8_t guaranteedSpinTarget;
+        uint8_t guaranteedSpinProgress;
+        uint8_t recentWinnerCount;
+        Array<uint8_t, kGameRouletteRecentWinnerCount> recentWinnerRewardIndex;
+        Array<uint16_t, kGameRouletteRecentWinnerCount> recentWinnerAgeMinutes;
+        Array<Array<char, kGameRouletteWinnerNameLength>, kGameRouletteRecentWinnerCount> recentWinnerName;
     };
-    #pragma pack(pop)
+#pragma pack(pop)
 
-    #pragma pack(push, 1)
+#pragma pack(push, 1)
     struct GameRouletteSpinOutgoing
     {
         uint16_t opcode{ 0x835 };
@@ -252,9 +262,9 @@ namespace shaiya
         uint8_t rewardCount;
         uint32_t spinDurationMs;
     };
-    #pragma pack(pop)
+#pragma pack(pop)
 
-    #pragma pack(push, 1)
+#pragma pack(push, 1)
     struct GameRouletteRewardOutgoing
     {
         uint16_t opcode{ 0x836 };
@@ -264,5 +274,5 @@ namespace shaiya
         uint8_t rewardTypeId;
         uint8_t rewardCount;
     };
-    #pragma pack(pop)
+#pragma pack(pop)
 }

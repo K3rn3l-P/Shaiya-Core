@@ -12,6 +12,7 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="include\main.h" />
+    <ClInclude Include="include\shaiya\Roulette.h" />
     <ClInclude Include="src\include\config.h" />
     <ClInclude Include="src\include\custom_gm_panel.h" />
     <ClInclude Include="src\include\debug_panel.h" />
@@ -168,8 +169,6 @@
   </ItemGroup>
   <ItemGroup>
     <ResourceCompile Include="resources\sdev.rc" />
-  </ItemGroup>
-  <ItemGroup>
   </ItemGroup>
   <PropertyGroup Label="Globals">
     <VCProjectVersion>17.0</VCProjectVersion>

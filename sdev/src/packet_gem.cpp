@@ -911,7 +911,7 @@ void __declspec(naked) naked_0x47A040()
         push esi // packet
         push edi // user
         call packet_gem::handler
-        add esp,0x8
+        add esp, 0x8
 
         popad
 
@@ -929,7 +929,7 @@ void __declspec(naked) naked_0x47A003()
         push esi // packet
         push edi // user
         call packet_gem::handler_0x806
-        add esp,0x8
+        add esp, 0x8
 
         popad
 
@@ -942,20 +942,20 @@ void __declspec(naked) naked_0x46CD38()
 {
     __asm
     {
-        mov edi,[esp+0x14]
-        mov edi,[edi+0x30]
+        mov edi, [esp + 0x14]
+        mov edi, [edi + 0x30]
         // ReqRec is reused as a custom lapisian success rate.
         // The game expects the final rate in the scaled 1,000,000 range.
-        movzx edi,word ptr[edi+0x3A]
-        test edi,edi
+        movzx edi, word ptr[edi + 0x3A]
+        test edi, edi
         je _original
-        imul edi,edi,0x64
+        imul edi, edi, 0x64
         jmp u0x46CD3F
 
-        _original:
+        _original :
         // g_LapisianEnchantSuccessRate
-        mov edi,[edx*0x4+0x581C88]
-        jmp u0x46CD3F
+        mov edi, [edx * 0x4 + 0x581C88]
+            jmp u0x46CD3F
     }
 }
 
@@ -973,7 +973,7 @@ void __declspec(naked) naked_0x46CDB0()
         push ebx // packet
         push ebp // user
         call packet_gem::lapisian_add_protect
-        add esp,0x8
+        add esp, 0x8
 
         popad
 
@@ -992,19 +992,19 @@ void __declspec(naked) naked_0x46D3BC()
         push ebx // packet
         push ebp // user
         call packet_gem::lapisian_add_protect
-        add esp,0x8
-        test al,al
+        add esp, 0x8
+        test al, al
 
         popad
 
         jne _0x46D598
 
         // original
-        movzx eax,byte ptr[ebx+0x7]
-        movzx ebx,byte ptr[ebx+0x8]
+        movzx eax, byte ptr[ebx + 0x7]
+        movzx ebx, byte ptr[ebx + 0x8]
         jmp u0x46D3C4
 
-        _0x46D598:
+        _0x46D598 :
         jmp u0x46D598
     }
 }

@@ -260,6 +260,9 @@
     <ClInclude Include="src\include\custom_gm_panel.h">
       <Filter>include</Filter>
     </ClInclude>
+    <ClInclude Include="include\shaiya\Roulette.h">
+      <Filter>include\shaiya</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\dllmain.cpp">
@@ -480,7 +483,5 @@
     <ResourceCompile Include="resources\sdev.rc">
       <Filter>resources</Filter>
     </ResourceCompile>
-  </ItemGroup>
-  <ItemGroup>
   </ItemGroup>
 </Project>

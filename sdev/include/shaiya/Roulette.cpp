@@ -1,4 +1,5 @@
 #include <array>
+#include <cstring>
 #include <random>
 #include <shaiya/include/network/game/outgoing/0800.h>
 #include "CGameData.h"
@@ -87,15 +88,15 @@ namespace
     std::mt19937& roulette_rng()
     {
         static thread_local std::mt19937 rng([]()
-        {
-            std::random_device seed;
-            std::array<std::uint32_t, 8> seedData{};
-            for (auto& value : seedData)
-                value = seed();
+            {
+                std::random_device seed;
+                std::array<std::uint32_t, 8> seedData{};
+                for (auto& value : seedData)
+                    value = seed();
 
-            std::seed_seq seq(seedData.begin(), seedData.end());
-            return std::mt19937(seq);
-        }());
+                std::seed_seq seq(seedData.begin(), seedData.end());
+                return std::mt19937(seq);
+            }());
 
         return rng;
     }
@@ -122,6 +123,84 @@ namespace
 
         return static_cast<uint8_t>(g_rouletteConfig.rewardCount - 1);
     }
+
+    uint8_t read_spin_progress(uint32_t billingId)
+    {
+        auto it = g_rouletteSpinProgress.find(billingId);
+        return it != g_rouletteSpinProgress.end() ? it->second : 0;
+    }
+
+    void write_spin_progress(uint32_t billingId, uint8_t value)
+    {
+        if (!billingId)
+            return;
+
+        if (value == 0)
+        {
+            g_rouletteSpinProgress.erase(billingId);
+            return;
+        }
+
+        g_rouletteSpinProgress[billingId] = value;
+    }
+
+    void record_recent_winner(CUser* user, uint8_t rewardIndex)
+    {
+        if (!user || rewardIndex >= g_rouletteConfig.rewardCount)
+            return;
+
+        const auto& reward = g_rouletteConfig.rewards[rewardIndex];
+        if (!reward.bigWinner)
+            return;
+
+        RouletteRecentWinner winner{};
+        strncpy_s(winner.name.data(), winner.name.size(), user->charName.data(), _TRUNCATE);
+        winner.rewardIndex = rewardIndex;
+        winner.wonAt = std::chrono::system_clock::now();
+
+        g_rouletteRecentWinners.push_front(winner);
+        while (g_rouletteRecentWinners.size() > kRouletteRecentWinnerCount)
+            g_rouletteRecentWinners.pop_back();
+    }
+
+    void send_list_locked(CUser* user)
+    {
+        if (!user)
+            return;
+
+        GameRouletteListOutgoing outgoing{};
+        outgoing.tokenType = g_rouletteConfig.tokenType;
+        outgoing.tokenTypeId = g_rouletteConfig.tokenTypeId;
+        outgoing.tokenCount = g_rouletteConfig.tokenCount;
+        outgoing.itemCount = g_rouletteConfig.rewardCount;
+        outgoing.featuredRewardIndex = g_rouletteConfig.featuredRewardIndex;
+        outgoing.guaranteedRewardIndex = g_rouletteConfig.guaranteedRewardIndex;
+        outgoing.guaranteedSpinTarget = g_rouletteConfig.guaranteedSpinTarget;
+        outgoing.guaranteedSpinProgress = read_spin_progress(user->billingId);
+
+        for (uint8_t i = 0; i < g_rouletteConfig.rewardCount && i < g_rouletteConfig.rewards.size(); ++i)
+        {
+            outgoing.rewardType[i] = g_rouletteConfig.rewards[i].type;
+            outgoing.rewardTypeId[i] = g_rouletteConfig.rewards[i].typeId;
+            outgoing.rewardCount[i] = g_rouletteConfig.rewards[i].count;
+            outgoing.rewardChance[i] = g_rouletteConfig.rewards[i].chance;
+        }
+
+        auto now = std::chrono::system_clock::now();
+        const auto recentWinnerCount = std::min(g_rouletteRecentWinners.size(), static_cast<std::size_t>(kGameRouletteRecentWinnerCount));
+        outgoing.recentWinnerCount = static_cast<uint8_t>(recentWinnerCount);
+        for (std::size_t i = 0; i < outgoing.recentWinnerCount; ++i)
+        {
+            const auto& winner = g_rouletteRecentWinners[i];
+            outgoing.recentWinnerRewardIndex[i] = winner.rewardIndex;
+            int64_t ageMinutes = std::chrono::duration_cast<std::chrono::minutes>(now - winner.wonAt).count();
+            ageMinutes = std::clamp<int64_t>(ageMinutes, int64_t{ 0 }, int64_t{ UINT16_MAX });
+            outgoing.recentWinnerAgeMinutes[i] = static_cast<uint16_t>(ageMinutes);
+            outgoing.recentWinnerName[i] = winner.name;
+        }
+
+        SConnection::Send(user, &outgoing, sizeof(GameRouletteListOutgoing));
+    }
 }
 
 void roulette::send_list(CUser* user)
@@ -130,22 +209,7 @@ void roulette::send_list(CUser* user)
         return;
 
     std::lock_guard lock(g_rouletteMutex);
-
-    GameRouletteListOutgoing outgoing{};
-    outgoing.tokenType = g_rouletteConfig.tokenType;
-    outgoing.tokenTypeId = g_rouletteConfig.tokenTypeId;
-    outgoing.tokenCount = g_rouletteConfig.tokenCount;
-    outgoing.itemCount = g_rouletteConfig.rewardCount;
-
-    for (uint8_t i = 0; i < g_rouletteConfig.rewardCount && i < g_rouletteConfig.rewards.size(); ++i)
-    {
-        outgoing.rewardType[i] = g_rouletteConfig.rewards[i].type;
-        outgoing.rewardTypeId[i] = g_rouletteConfig.rewards[i].typeId;
-        outgoing.rewardCount[i] = g_rouletteConfig.rewards[i].count;
-        outgoing.rewardChance[i] = g_rouletteConfig.rewards[i].chance;
-    }
-
-    SConnection::Send(user, &outgoing, sizeof(GameRouletteListOutgoing));
+    send_list_locked(user);
 }
 
 void roulette::handle_spin(CUser* user)
@@ -167,7 +231,15 @@ void roulette::handle_spin(CUser* user)
         return;
     }
 
+    const auto spinProgress = read_spin_progress(user->billingId);
     uint8_t rewardIndex = choose_reward_index();
+    if (g_rouletteConfig.guaranteedRewardIndex < g_rouletteConfig.rewardCount
+        && g_rouletteConfig.guaranteedSpinTarget > 0
+        && static_cast<uint16_t>(spinProgress + 1) >= g_rouletteConfig.guaranteedSpinTarget)
+    {
+        rewardIndex = g_rouletteConfig.guaranteedRewardIndex;
+    }
+
     const auto& reward = g_rouletteConfig.rewards[rewardIndex];
     auto itemInfo = CGameData::GetItemInfo(reward.type, reward.typeId);
     if (!itemInfo)
@@ -196,6 +268,7 @@ void roulette::handle_spin(CUser* user)
     pending.tokenType = g_rouletteConfig.tokenType;
     pending.tokenTypeId = g_rouletteConfig.tokenTypeId;
     pending.tokenCount = g_rouletteConfig.tokenCount;
+    pending.spinProgressAtStart = spinProgress;
     pending.completeAt = std::chrono::system_clock::now() + std::chrono::milliseconds(kRouletteSpinDurationMs);
 
     auto [pendingIt, inserted] = g_roulettePending.emplace(user->billingId, pending);
@@ -277,6 +350,20 @@ void roulette::update_pending_spins()
             continue;
         }
 
+        if (g_rouletteConfig.guaranteedSpinTarget > 0)
+        {
+            auto nextProgress = static_cast<uint8_t>(std::min<int>(
+                static_cast<int>(pending.spinProgressAtStart) + 1,
+                static_cast<int>(g_rouletteConfig.guaranteedSpinTarget)));
+
+            if (rewardIndex == g_rouletteConfig.guaranteedRewardIndex)
+                nextProgress = 0;
+
+            write_spin_progress(billingId, nextProgress);
+        }
+
+        record_recent_winner(user, rewardIndex);
         send_reward_result(user, GameRouletteResult::Success, rewardIndex, reward.type, reward.typeId, reward.count);
+        send_list_locked(user);
     }
 }

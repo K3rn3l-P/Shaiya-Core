@@ -475,6 +475,8 @@ void Configuration::LoadRoulette()
 {
     g_rouletteConfig = {};
     g_roulettePending.clear();
+    g_rouletteSpinProgress.clear();
+    g_rouletteRecentWinners.clear();
 
     try
     {
@@ -507,6 +509,20 @@ void Configuration::LoadRoulette()
         g_rouletteConfig.tokenType = static_cast<uint8_t>(tokenType);
         g_rouletteConfig.tokenTypeId = static_cast<uint8_t>(tokenTypeId);
         g_rouletteConfig.tokenCount = static_cast<uint8_t>(tokenCount);
+        auto featuredRewardIndex = static_cast<int>(util::ini::get_value(L"Info", L"FeaturedRewardIndex", 0, path));
+        g_rouletteConfig.featuredRewardIndex = featuredRewardIndex > 0 && featuredRewardIndex <= static_cast<int>(g_rouletteConfig.rewards.size())
+            ? static_cast<uint8_t>(featuredRewardIndex - 1)
+            : 0xFF;
+
+        auto guaranteedRewardIndex = static_cast<int>(util::ini::get_value(L"Info", L"GuaranteedRewardIndex", 0, path));
+        g_rouletteConfig.guaranteedRewardIndex = guaranteedRewardIndex > 0 && guaranteedRewardIndex <= static_cast<int>(g_rouletteConfig.rewards.size())
+            ? static_cast<uint8_t>(guaranteedRewardIndex - 1)
+            : 0xFF;
+
+        int guaranteedSpinTarget = static_cast<int>(util::ini::get_value(L"Info", L"GuaranteedSpinTarget", 0, path));
+        if (!std::in_range<uint8_t>(guaranteedSpinTarget) || guaranteedSpinTarget < 0)
+            guaranteedSpinTarget = 0;
+        g_rouletteConfig.guaranteedSpinTarget = static_cast<uint8_t>(guaranteedSpinTarget);
 
         int rewardCount = 0;
         for (int i = 1; i <= static_cast<int>(g_rouletteConfig.rewards.size()); ++i)
@@ -530,6 +546,7 @@ void Configuration::LoadRoulette()
             reward.typeId = static_cast<uint8_t>(rewardTypeId);
             reward.count = static_cast<uint8_t>(count);
             reward.chance = static_cast<uint16_t>(std::min(chance, 10000));
+            reward.bigWinner = util::ini::get_value(section.c_str(), L"BigWinner", 0, path) != 0;
             ++rewardCount;
         }
 
@@ -591,11 +608,22 @@ void Configuration::LoadRoulette()
         }
 
         g_rouletteConfig.valid = true;
+
+        if (g_rouletteConfig.featuredRewardIndex >= g_rouletteConfig.rewardCount)
+            g_rouletteConfig.featuredRewardIndex = g_rouletteConfig.rewardCount ? 0 : 0xFF;
+
+        if (g_rouletteConfig.guaranteedRewardIndex >= g_rouletteConfig.rewardCount)
+            g_rouletteConfig.guaranteedRewardIndex = 0xFF;
+
+        if (g_rouletteConfig.guaranteedRewardIndex == 0xFF)
+            g_rouletteConfig.guaranteedSpinTarget = 0;
     }
     catch (...)
     {
         g_rouletteConfig = {};
         g_roulettePending.clear();
+        g_rouletteSpinProgress.clear();
+        g_rouletteRecentWinners.clear();
     }
 }
 

@@ -1,3 +1,4 @@
+// imgui_layer_internal.h — shared state, types, and constants for the
 #pragma once
 // imgui_layer_internal.h — shared state, types, and constants for the
 // imgui_layer subsystem.  Every imgui_layer_*.cpp includes this file
@@ -10,6 +11,7 @@
 #include <windows.h>
 #include <windowsx.h>
 #include <d3d9.h>
+#include <dinput.h>
 #include <algorithm>
 using std::max;
 using std::min;
@@ -155,6 +157,7 @@ namespace imgui_layer
 
     // Per-element positions
     inline ImVec2 g_panelPosition = ImVec2(80.0f, 80.0f);
+    inline float g_panelScale = 1.0f;
     inline ImVec2 g_emojiButtonPosition = kDefaultEmojiButtonPosition;
     inline ImVec2 g_emojiPickerPosition = ImVec2(0.0f, 0.0f);
     inline ImVec2 g_rewardButtonPosition = kDefaultRewardButtonPosition;
@@ -198,6 +201,8 @@ namespace imgui_layer
     // (native chat UI hook removed — only chat text hiding remains)
     inline bool g_draggedPanel = false;
     inline bool g_draggingPanel = false;
+    inline bool g_draggingPanelScale = false;
+    inline bool g_draggedPanelScale = false;
     inline bool g_draggingRewardButton = false;
     inline bool g_draggedRewardButton = false;
     inline bool g_draggingRouletteButton = false;
@@ -208,6 +213,7 @@ namespace imgui_layer
     inline bool g_draggedNpcButton = false;
     inline bool g_panelMouseWasDown = false;
     inline ImVec2 g_panelDragOffset = ImVec2(0.0f, 0.0f);
+    inline float g_panelScaleDragStart = 1.0f;
     inline ImVec2 g_rewardButtonDragOffset = ImVec2(0.0f, 0.0f);
     inline ImVec2 g_rouletteButtonDragOffset = ImVec2(0.0f, 0.0f);
     inline ImVec2 g_settingsButtonDragOffset = ImVec2(0.0f, 0.0f);
@@ -249,6 +255,21 @@ namespace imgui_layer
     inline uint64_t g_rouletteBgDataSize = 0;
     inline bool g_rouletteBgFound = false;
     inline bool g_rouletteBgLoadAttempted = false;
+    inline LPDIRECT3DTEXTURE9 g_rouletteDragonTexture = nullptr;
+    inline uint64_t g_rouletteDragonDataOffset = 0;
+    inline uint64_t g_rouletteDragonDataSize = 0;
+    inline bool g_rouletteDragonFound = false;
+    inline bool g_rouletteDragonLoadAttempted = false;
+    inline LPDIRECT3DTEXTURE9 g_rouletteLeftPanelTexture = nullptr;
+    inline uint64_t g_rouletteLeftPanelDataOffset = 0;
+    inline uint64_t g_rouletteLeftPanelDataSize = 0;
+    inline bool g_rouletteLeftPanelFound = false;
+    inline bool g_rouletteLeftPanelLoadAttempted = false;
+    inline LPDIRECT3DTEXTURE9 g_rouletteRightPanelTexture = nullptr;
+    inline uint64_t g_rouletteRightPanelDataOffset = 0;
+    inline uint64_t g_rouletteRightPanelDataSize = 0;
+    inline bool g_rouletteRightPanelFound = false;
+    inline bool g_rouletteRightPanelLoadAttempted = false;
     inline LPDIRECT3DTEXTURE9 g_rewardIconTexture = nullptr;
     inline uint64_t g_rewardIconDataOffset = 0;
     inline uint64_t g_rewardIconDataSize = 0;
@@ -293,8 +314,9 @@ namespace imgui_layer
     constexpr float kRollButtonOffsetY = -47.0f;
     constexpr float kRollButtonH = 30.0f;
     constexpr float kRollButtonInset = 95.0f;
-    constexpr float kPanelFixedW = 546.0f;
-    constexpr float kPanelFixedH = 577.0f;
+    constexpr float kPanelFixedW = 1188.0f;
+    constexpr float kPanelFixedH = 670.0f;
+    constexpr const char* kPanelScaleKey = "PANEL_SCALE";
 
     // -----------------------------------------------------------------------
     //  Shared types
@@ -473,7 +495,7 @@ namespace imgui_layer
 
     // imgui_layer_roulette.cpp
     void update_roulette_spin_state();
-    void draw_roulette_wheel();
+    void draw_roulette_wheel(bool canRoll);
     void draw_panel_header(bool& panelOpen);
     void draw_panel_shell();
     void draw_roulette_button_overlay();
@@ -508,6 +530,9 @@ namespace imgui_layer
     std::string get_game_relative_path(const char* relative);
     LPDIRECT3DTEXTURE9 load_saf_texture(LPDIRECT3DTEXTURE9& texture, bool& loadAttempted, bool found, uint64_t offset, uint64_t size);
     LPDIRECT3DTEXTURE9 load_roulette_bg_texture();
+    LPDIRECT3DTEXTURE9 load_roulette_dragon_texture();
+    LPDIRECT3DTEXTURE9 load_roulette_left_panel_texture();
+    LPDIRECT3DTEXTURE9 load_roulette_right_panel_texture();
     LPDIRECT3DTEXTURE9 load_reward_icon_texture();
     LPDIRECT3DTEXTURE9 load_roulette_icon_texture();
     LPDIRECT3DTEXTURE9 load_settings_icon_texture();

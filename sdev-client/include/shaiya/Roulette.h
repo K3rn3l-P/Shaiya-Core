@@ -6,6 +6,8 @@
 namespace shaiya
 {
     inline constexpr std::size_t kRouletteMaxRewards = 20;
+    inline constexpr std::size_t kRouletteRecentWinnerCount = 5;
+    inline constexpr std::size_t kRouletteWinnerNameLength = 21;
 
     namespace roulette_event
     {
@@ -19,6 +21,14 @@ namespace shaiya
         inline std::array<uint8_t, kRouletteMaxRewards> rewardTypeId{};
         inline std::array<uint8_t, kRouletteMaxRewards> rewardCount{};
         inline std::array<uint16_t, kRouletteMaxRewards> rewardChance{};
+        inline uint8_t featuredRewardIndex = 0xFF;
+        inline uint8_t guaranteedRewardIndex = 0xFF;
+        inline uint8_t guaranteedSpinTarget = 0;
+        inline uint8_t guaranteedSpinProgress = 0;
+        inline uint8_t recentWinnerCount = 0;
+        inline std::array<uint8_t, kRouletteRecentWinnerCount> recentWinnerRewardIndex{};
+        inline std::array<uint16_t, kRouletteRecentWinnerCount> recentWinnerAgeMinutes{};
+        inline std::array<std::array<char, kRouletteWinnerNameLength>, kRouletteRecentWinnerCount> recentWinnerName{};
 
         inline bool spinActive = false;
         inline uint32_t spinStartTick = 0;
@@ -33,6 +43,7 @@ namespace shaiya
         inline uint8_t lastResult = 0;
         inline bool lastGrantSuccess = false;
         inline uint32_t grantSerial = 0;
+        inline uint32_t grantEffectStartTick = 0;
         inline uint32_t celebrationUntilTick = 0;
     }
 }

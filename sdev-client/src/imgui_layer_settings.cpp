@@ -110,6 +110,7 @@ namespace imgui_layer {
 
         g_panelPosition.x = read_imgui_float(kPanelPosXKey, g_panelPosition.x);
         g_panelPosition.y = read_imgui_float(kPanelPosYKey, g_panelPosition.y);
+        g_panelScale = std::clamp(read_imgui_float(kPanelScaleKey, g_panelScale), 0.55f, 1.15f);
         g_emojiButtonPosition.x = read_imgui_float(kEmojiBtnXKey, g_emojiButtonPosition.x);
         g_emojiButtonPosition.y = read_imgui_float(kEmojiBtnYKey, g_emojiButtonPosition.y);
         g_rewardButtonPosition.x = read_imgui_float(kRewardBtnXKey, g_rewardButtonPosition.x);
@@ -137,6 +138,7 @@ namespace imgui_layer {
     {
         write_imgui_float(kPanelPosXKey, g_panelPosition.x);
         write_imgui_float(kPanelPosYKey, g_panelPosition.y);
+        write_imgui_float(kPanelScaleKey, g_panelScale);
         write_imgui_float(kEmojiBtnXKey, g_emojiButtonPosition.x);
         write_imgui_float(kEmojiBtnYKey, g_emojiButtonPosition.y);
         write_imgui_float(kRewardBtnXKey, g_rewardButtonPosition.x);
