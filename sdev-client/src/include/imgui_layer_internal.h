@@ -63,10 +63,6 @@ namespace imgui_layer
     constexpr const char* kImguiIniSection = "IMGUI";
     constexpr const char* kPanelPosXKey = "PANEL_X";
     constexpr const char* kPanelPosYKey = "PANEL_Y";
-    constexpr auto kDefaultEmojiButtonPosition = ImVec2(321.0f, 939.0f);
-    constexpr auto kEmojiPickerOffset = ImVec2(32.0f, 0.0f);
-    constexpr const char* kEmojiBtnXKey = "EMOJI_X";
-    constexpr const char* kEmojiBtnYKey = "EMOJI_Y";
     constexpr auto kEmojiButtonSize = ImVec2(20.0f, 20.0f);
     constexpr auto kEmojiPickerSize = ImVec2(190.0f, 200.0f);
     constexpr auto kEmojiPickerIconSize = ImVec2(20.0f, 20.0f);
@@ -142,6 +138,19 @@ namespace imgui_layer
     inline bool g_mouseDeviceHooked = false;
 
     // Hit-test rects for every overlay element
+    // Main map anchor — object pointer captured once from init; pos/size read live each frame.
+    inline uintptr_t g_mainMapObjectPtr = 0;
+    constexpr float kButtonAnchorOffsetX = 13.0f;
+    constexpr float kButtonAnchorOffsetY = 18.0f;
+    constexpr float kButtonAnchorStride = 34.0f;
+
+    void update_anchored_button_positions();
+
+    // CChat exploration — global pointer at 0x7C06F8, sub-CWindow offsets for chat_box textures.
+    // Chat panel object (0x75E0-byte UI container) — captured at runtime
+    // from the chat-init function at VA 0x47D1F0 (ecx = this).
+    inline uintptr_t g_chatPanelPtr = 0;
+
     inline RECT g_panelDragRect{};
     inline RECT g_panelWindowRect{};
     inline RECT g_emojiButtonRect{};
@@ -158,7 +167,7 @@ namespace imgui_layer
     // Per-element positions
     inline ImVec2 g_panelPosition = ImVec2(80.0f, 80.0f);
     inline float g_panelScale = 1.0f;
-    inline ImVec2 g_emojiButtonPosition = kDefaultEmojiButtonPosition;
+    inline ImVec2 g_emojiButtonPosition = ImVec2(321.0f, 939.0f);
     inline ImVec2 g_emojiPickerPosition = ImVec2(0.0f, 0.0f);
     inline ImVec2 g_rewardButtonPosition = kDefaultRewardButtonPosition;
     inline ImVec2 g_rewardBarPosition = ImVec2(-1.0f, -1.0f);
@@ -193,7 +202,6 @@ namespace imgui_layer
     inline bool    g_parallelFontLoaded = false;
 
     // Drag state
-    inline bool g_emojiRepositionMode = false;
     inline DWORD g_lastRouletteRollTick = 0;
     inline DWORD g_lastRouletteListTick = 0;
     inline bool g_showEmojiPicker = false;
@@ -480,6 +488,7 @@ namespace imgui_layer
     struct FloatingEmojiRenderOverlay
     {
         DWORD tick;
+        void* source;
         int x;
         int y;
         bool lowerChat;
@@ -564,7 +573,6 @@ namespace imgui_layer
     };
 
     inline ChatTuning g_tune = kDefaultChatTuning;
-    inline float g_chatTextWidthOverride = 0.0f;  // >0 = debug override
     constexpr int kScrollMinLines = 1;
     inline int g_chatScrollOffset = 0;
 
@@ -606,7 +614,7 @@ namespace imgui_layer
     int resolve_item_icon_index(int type, int typeId);
     CTexture* get_or_load_native_item_icon_texture(int iconId);
     bool get_item_icon_atlas_config(int type, std::string& outFileName, int& outCols, int& outRows, int& outWidth, int& outHeight);
-    LPDIRECT3DTEXTURE9 get_or_load_item_icon_atlas_texture(const std::string& fileName);
+    LPDIRECT3DTEXTURE9 get_or_load_item_icon_atlas_texture(const std::string& fileName, int width, int height);
     void draw_item_icon_at(ImDrawList* drawList, const ImVec2& min, const ImVec2& max, int type, int typeId);
     void draw_item_count_badge(ImDrawList* drawList, const ImVec2& min, const ImVec2& max, int count);
     void release_item_icon_textures();
@@ -633,10 +641,6 @@ namespace imgui_layer
     void update_reward_auto_claim();
     float reward_item_progress_ratio();
 
-    // Parallel chat window layout persistence
-    void load_chat_window_layout();
-    void save_chat_window_layout();
-
     // imgui_layer_emoji.cpp
     void ensure_emoji_catalog_loaded();
     void release_emoji_textures();
@@ -648,7 +652,6 @@ namespace imgui_layer
     void draw_lower_chat_emoji_overlay();
     void draw_emoji_overlay();
     void install_chat_emoji_hook();
-    // (install_native_chat_ui_hook removed)
     const std::string& get_game_base_dir();
     std::string get_game_relative_path(const char* relative);
     LPDIRECT3DTEXTURE9 load_saf_texture(LPDIRECT3DTEXTURE9& texture, bool& loadAttempted, bool found, uint64_t offset, uint64_t size);

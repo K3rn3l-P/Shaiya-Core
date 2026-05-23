@@ -25,9 +25,9 @@ namespace packet
     {
         static constexpr unsigned int kQuantityHookAddr = 0x42E117;
         static constexpr unsigned int kQuantityPatchAddr = 0x42E127;
-        static constexpr unsigned char kCmpBytes[] = { 0x3D, 0xFF, 0x00, 0x00, 0x00 };
-        static constexpr unsigned char kNopBytes[] = { 0x90, 0x90, 0x90 };
-        static constexpr unsigned char kMovBytes[] = { 0xFF, 0x00, 0x00, 0x00 };
+        static constexpr unsigned char kCmpBytes[] = {0x3D, 0xFF, 0x00, 0x00, 0x00};
+        static constexpr unsigned char kNopBytes[] = {0x90, 0x90, 0x90};
+        static constexpr unsigned char kMovBytes[] = {0xFF, 0x00, 0x00, 0x00};
 
         // Raise the client-side buy/sell quantity limit from 10 to 255.
         // cmp eax,0x0A -> cmp eax,0xFF
@@ -70,14 +70,6 @@ namespace packet
         roulette_event::rewardTypeId = incoming->rewardTypeId;
         roulette_event::rewardCount = incoming->rewardCount;
         roulette_event::rewardChance = incoming->rewardChance;
-        roulette_event::featuredRewardIndex = incoming->featuredRewardIndex;
-        roulette_event::guaranteedRewardIndex = incoming->guaranteedRewardIndex;
-        roulette_event::guaranteedSpinTarget = incoming->guaranteedSpinTarget;
-        roulette_event::guaranteedSpinProgress = incoming->guaranteedSpinProgress;
-        roulette_event::recentWinnerCount = incoming->recentWinnerCount;
-        roulette_event::recentWinnerRewardIndex = incoming->recentWinnerRewardIndex;
-        roulette_event::recentWinnerAgeMinutes = incoming->recentWinnerAgeMinutes;
-        roulette_event::recentWinnerName = incoming->recentWinnerName;
         roulette_event::listReceived = true;
         roulette_event::hasList = incoming->itemCount > 0;
     }
@@ -97,7 +89,6 @@ namespace packet
         roulette_event::rewardTypeIdCurrent = incoming->rewardTypeId;
         roulette_event::rewardCountCurrent = incoming->rewardCount;
         roulette_event::lastGrantSuccess = false;
-        roulette_event::grantEffectStartTick = 0;
         roulette_event::celebrationUntilTick = 0;
         ++roulette_event::spinSerial;
     }
@@ -112,10 +103,7 @@ namespace packet
         roulette_event::rewardTypeIdCurrent = incoming->rewardTypeId;
         roulette_event::rewardCountCurrent = incoming->rewardCount;
         if (roulette_event::lastGrantSuccess)
-        {
-            roulette_event::grantEffectStartTick = GetTickCount();
             roulette_event::celebrationUntilTick = GetTickCount() + 2500U;
-        }
         ++roulette_event::grantSerial;
     }
 
@@ -286,9 +274,9 @@ namespace packet
         for (uint32_t i = 0; i < count; ++i)
         {
             reward_item_event::items[i].minutes = incoming->itemList[i].minutes;
-            reward_item_event::items[i].type = incoming->itemList[i].type;
-            reward_item_event::items[i].typeId = incoming->itemList[i].typeId;
-            reward_item_event::items[i].count = incoming->itemList[i].count;
+            reward_item_event::items[i].type    = incoming->itemList[i].type;
+            reward_item_event::items[i].typeId  = incoming->itemList[i].typeId;
+            reward_item_event::items[i].count   = incoming->itemList[i].count;
         }
 
         reward_item_event::hasList = count > 0;
@@ -413,20 +401,20 @@ void __declspec(naked) naked_0x59F896()
     __asm
     {
         // CPlayerData->charId
-        mov edi, dword ptr ds : [0x90E2F4]
+        mov edi,dword ptr ds:[0x90E2F4]
         // CCharacter->id
-        cmp edi, [esi + 0x34]
+        cmp edi,[esi+0x34]
         jne wrong_appearance
 
         // sex, size, face, hair
-        mov byte ptr ds : [0x914474] , al
-        mov byte ptr ds : [0x913472] , cl
-        mov byte ptr ds : [0x913471] , dl
-        mov byte ptr ds : [0x913470] , bl
+        mov byte ptr ds:[0x914474],al
+        mov byte ptr ds:[0x913472],cl
+        mov byte ptr ds:[0x913471],dl
+        mov byte ptr ds:[0x913470],bl
 
-        wrong_appearance :
-        mov ecx, esi
-            jmp u0x59F8AF
+        wrong_appearance:
+        mov ecx,esi
+        jmp u0x59F8AF
     }
 }
 
@@ -436,13 +424,13 @@ void __declspec(naked) naked_0x5933F8()
     __asm
     {
         // original
-        mov byte ptr[esi + 0x1C9], al
+        mov byte ptr[esi+0x1C9],al
 
         pushad
 
         push esi // user
         call packet::hook_0x303
-        add esp, 0x4
+        add esp,0x4
 
         popad
 
@@ -456,14 +444,14 @@ void __declspec(naked) naked_0x4EF2F3()
     __asm
     {
         // original
-        mov[eax + 0x10], ebx
+        mov [eax+0x10],ebx
 
         pushad
 
         push ebx // killCount
         push edi // killer
         call packet::hook_0x229
-        add esp, 0x8
+        add esp,0x8
 
         popad
 
@@ -479,13 +467,13 @@ void __declspec(naked) naked_0x593D0F()
     {
         // original
         push 0x0 // arg #16
-        cmp al, 0xB
+        cmp al,0xB
         jne _0x593D73
 
         push 0x0 // arg #15
         jmp u0x593D15
 
-        _0x593D73 :
+        _0x593D73:
         jmp u0x593D73
     }
 }
@@ -499,11 +487,11 @@ void __declspec(naked) naked_0x59EC88()
 
         push eax
         call packet::handle_normalized_packet
-        add esp, 0x4
+        add esp,0x4
 
         popad
 
-        mov esi, dword ptr ds : [0x22AF6F8]
+        mov esi,dword ptr ds:[0x22AF6F8]
         jmp u0x59EC8E
     }
 }
@@ -515,48 +503,50 @@ void __declspec(naked) naked_0x5F1E10()
     {
         pushad
 
-        movzx eax, word ptr[esp + 0x24]
-        cmp eax, 0x834
+        movzx eax,word ptr [esp+0x24]
+
+        // --- Roulette / Reward Item (game phase) ---
+        cmp eax,0x834
         je roulette_packet
-        cmp eax, 0x835
+        cmp eax,0x835
         je roulette_packet
-        cmp eax, 0x836
+        cmp eax,0x836
         je roulette_packet
-        cmp eax, 0x1F01
+        cmp eax,0x1F01
         je reward_item_packet
-        cmp eax, 0x1F03
+        cmp eax,0x1F03
         je reward_item_packet
-        cmp eax, 0x1F04
+        cmp eax,0x1F04
         je reward_item_packet
-        cmp eax, 0x1F05
+        cmp eax,0x1F05
         je reward_item_packet
-        cmp eax, 0x1F06
+        cmp eax,0x1F06
         je reward_item_packet
 
         popad
-        mov edx, dword ptr[esp + 0x4]
-        movzx eax, dx
+        mov edx,dword ptr [esp+0x4]
+        movzx eax,dx
         jmp u0x5F1E17
 
-        roulette_packet :
-        mov ecx, dword ptr[esp + 0x28]
-            push ecx
-            push eax
-            call packet::handle_roulette_dispatch
-            add esp, 0x8
+        roulette_packet:
+        mov ecx,dword ptr [esp+0x28]
+        push ecx
+        push eax
+        call packet::handle_roulette_dispatch
+        add esp,0x8
 
-            popad
-            ret
+        popad
+        ret
 
-            reward_item_packet :
-        mov ecx, dword ptr[esp + 0x28]
-            push ecx
-            push eax
-            call packet::handle_reward_item_dispatch
-            add esp, 0x8
+        reward_item_packet:
+        mov ecx,dword ptr [esp+0x28]
+        push ecx
+        push eax
+        call packet::handle_reward_item_dispatch
+        add esp,0x8
 
-            popad
-            ret
+        popad
+        ret
     }
 }
 

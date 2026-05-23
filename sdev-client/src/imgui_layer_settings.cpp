@@ -111,8 +111,6 @@ namespace imgui_layer {
         g_panelPosition.x = read_imgui_float(kPanelPosXKey, g_panelPosition.x);
         g_panelPosition.y = read_imgui_float(kPanelPosYKey, g_panelPosition.y);
         g_panelScale = std::clamp(read_imgui_float(kPanelScaleKey, g_panelScale), 0.55f, 1.15f);
-        g_emojiButtonPosition.x = read_imgui_float(kEmojiBtnXKey, g_emojiButtonPosition.x);
-        g_emojiButtonPosition.y = read_imgui_float(kEmojiBtnYKey, g_emojiButtonPosition.y);
         g_rewardButtonPosition.x = read_imgui_float(kRewardBtnXKey, g_rewardButtonPosition.x);
         g_rewardButtonPosition.y = read_imgui_float(kRewardBtnYKey, g_rewardButtonPosition.y);
         g_rewardBarPosition.x = read_imgui_float(kRewardBarXKey, -1.0f);
@@ -130,7 +128,6 @@ namespace imgui_layer {
         g_battlegroundPanelPosition.x = read_imgui_float(kBattlegroundPanelXKey, -1.0f);
         g_battlegroundPanelPosition.y = read_imgui_float(kBattlegroundPanelYKey, -1.0f);
         g_rewardAutoClaimEnabled = read_imgui_bool(kRewardAutoClaimKey, false);
-        g_ingameChatActive = read_imgui_bool(kIngameChatActiveKey, false);
         g_imguiSettingsLoaded = true;
     }
 
@@ -139,8 +136,6 @@ namespace imgui_layer {
         write_imgui_float(kPanelPosXKey, g_panelPosition.x);
         write_imgui_float(kPanelPosYKey, g_panelPosition.y);
         write_imgui_float(kPanelScaleKey, g_panelScale);
-        write_imgui_float(kEmojiBtnXKey, g_emojiButtonPosition.x);
-        write_imgui_float(kEmojiBtnYKey, g_emojiButtonPosition.y);
         write_imgui_float(kRewardBtnXKey, g_rewardButtonPosition.x);
         write_imgui_float(kRewardBtnYKey, g_rewardButtonPosition.y);
         write_imgui_float(kRewardBarXKey, g_rewardBarPosition.x);
@@ -158,7 +153,6 @@ namespace imgui_layer {
         write_imgui_float(kBattlegroundPanelXKey, g_battlegroundPanelPosition.x);
         write_imgui_float(kBattlegroundPanelYKey, g_battlegroundPanelPosition.y);
         write_imgui_bool(kRewardAutoClaimKey, g_rewardAutoClaimEnabled);
-        write_imgui_bool(kIngameChatActiveKey, g_ingameChatActive);
         g_imguiSettingsDirty = false;
         g_lastPanelSaveTick = GetTickCount();
     }
@@ -1451,7 +1445,7 @@ namespace imgui_layer {
         if (now - g_welcomeStartTick < 4000)
             return;
 
-        Static::SysMsgToChatBox(ChatType::Acquire31, 12001, 12);
+        Static::SysMsgToChatBox(ChatType::Notice24, 12001, 12);
         g_sentWelcomeMessage = true;
         g_waitingWelcomeMessage = false;
     }

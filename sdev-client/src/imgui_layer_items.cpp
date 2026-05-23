@@ -1,13 +1,49 @@
 #include "include/imgui_layer_internal.h"
+#include "include/game_data_archive.h"
 #include <external/stb/stb_image.h>
 #include "include/shaiya/CDataFile.h"
 #include "include/shaiya/CItem.h"
 #include "include/shaiya/CTexture.h"
 #include "include/shaiya/ItemInfo.h"
-#include "resources/resource.h"
 #pragma comment(lib, "d3d9.lib")
 
 namespace imgui_layer {
+    namespace
+    {
+        struct ClientAtlasFile
+        {
+            uint64_t offset = 0;
+            uint64_t size = 0;
+        };
+
+        bool g_clientIconAtlasScanned = false;
+        std::unordered_map<std::string, ClientAtlasFile> g_clientIconAtlasFiles;
+
+        bool is_client_icon_atlas_folder(const std::string& lowerPath)
+        {
+            return lowerPath == "interface\\icon"
+                || lowerPath == "data\\interface\\icon"
+                || lowerPath == "data/interface/icon";
+        }
+
+        void ensure_client_icon_atlas_index()
+        {
+            if (g_clientIconAtlasScanned)
+                return;
+
+            g_clientIconAtlasScanned = true;
+            game_data::scan_sah_files([](const game_data::SahFileEntry& entry) {
+                if (is_client_icon_atlas_folder(entry.lowerPath)
+                    && entry.lowerFileName.size() > 4
+                    && entry.lowerFileName.ends_with(".dds"))
+                {
+                    g_clientIconAtlasFiles.try_emplace(
+                        entry.lowerFileName,
+                        ClientAtlasFile{ entry.offset, entry.size });
+                }
+            });
+        }
+    }
 
     int count_inventory_item(uint8_t type, uint8_t typeId)
     {
@@ -69,227 +105,113 @@ namespace imgui_layer {
         return entry.texture.texture ? &entry.texture : nullptr;
     }
 
+    const char* item_icon_atlas_file_for_type(int type)
+    {
+        static constexpr const char* kAtlasByItemType[] = {
+            nullptr,
+            "01.dds", "02.dds", "03.dds", "04.dds", "05.dds", "06.dds", "07.dds", "08.dds", "09.dds", "10.dds",
+            "11.dds", "12.dds", "13.dds", "14.dds", "15.dds", "16.dds", "17.dds", "18.dds", "19.dds", "20.dds",
+            "21.dds", "22.dds", "23.dds", "24.dds", "icon_somo.dds", "icon_somo.dds", "icon_somo.dds",
+            "icon_somo.dds", "icon_somo.dds", "icon_rapis.dds", "31.dds", "32.dds", "33.dds", "34.dds",
+            "35.dds", "36.dds", "37.dds", "icon_somo.dds", "39.dds", "40.dds", "icon_somo.dds",
+            "icon_somo.dds", "icon_somo.dds", "icon_somo.dds", "01.dds", "02.dds", "03.dds", "04.dds",
+            "05.dds", "05.dds", "06.dds", "06.dds", "07.dds", "07.dds", "08.dds", "08.dds", "09.dds",
+            "10.dds", "11.dds", "12.dds", "12.dds", "13.dds", "13.dds", "14.dds", "15.dds", "16.dds",
+            "17.dds", "18.dds", "19.dds", "20.dds", "21.dds", "16.dds", "17.dds", "18.dds", nullptr,
+            "20.dds", "21.dds", nullptr, nullptr, nullptr, nullptr, "32.dds", "33.dds", "34.dds", "35.dds",
+            "36.dds", "31.dds", "32.dds", "33.dds", nullptr, "34.dds", "35.dds", nullptr, "icon_somo.dds",
+            "icon_rapis.dds", "23.dds", "40.dds", nullptr, "icon_somo.dds", "icon_somo2.dds",
+            "icon_somo2.dds", "icon_somo3.dds", nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+            nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+            "icon_pet.dds", "icon_Wing.dds", nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+            nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+            nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+            "icon_DualLayer.dds",
+        };
+
+        static_assert(std::size(kAtlasByItemType) == 151);
+
+        if (type <= 0 || type >= static_cast<int>(std::size(kAtlasByItemType)))
+            return nullptr;
+
+        return kAtlasByItemType[type];
+    }
+
+    bool item_icon_atlas_layout(const std::string& fileName, int& outCols, int& outRows, int& outWidth, int& outHeight)
+    {
+        auto lowerFileName = game_data::lower_ascii(fileName);
+        if (lowerFileName == "icon_rapis.dds")
+        {
+            outCols = 8;
+            outRows = 16;
+            outWidth = 256;
+            outHeight = 512;
+            return true;
+        }
+
+        if (lowerFileName == "icon_pet.dds"
+            || lowerFileName == "icon_wing.dds"
+            || lowerFileName == "icon_duallayer.dds")
+        {
+            outCols = 16;
+            outRows = 8;
+            outWidth = 512;
+            outHeight = 256;
+            return true;
+        }
+
+        if (lowerFileName == "icon_somo.dds"
+            || lowerFileName == "icon_somo2.dds"
+            || lowerFileName == "icon_somo3.dds")
+        {
+            outCols = 16;
+            outRows = 16;
+            outWidth = 512;
+            outHeight = 512;
+            return true;
+        }
+
+        if (lowerFileName.size() > 4 && lowerFileName.ends_with(".dds"))
+        {
+            outCols = 4;
+            outRows = 16;
+            outWidth = 128;
+            outHeight = 512;
+            return true;
+        }
+
+        return false;
+    }
+
     bool get_item_icon_atlas_config(int type, std::string& outFileName, int& outCols, int& outRows, int& outWidth, int& outHeight)
     {
-        auto set_numeric_atlas = [&](int atlasType) -> bool
-            {
-                char fileName[16]{};
-                std::snprintf(fileName, sizeof(fileName), atlasType < 100 ? "%02d.dds" : "%d.dds", atlasType);
-                outFileName = fileName;
-                outCols = 4;
-                outRows = 16;
-                outWidth = 128;
-                outHeight = 512;
-                return true;
-            };
-
-        auto set_common_atlas = [&](const char* fileName) -> bool
-            {
-                outFileName = fileName;
-                if (_stricmp(fileName, "icon_rapis.dds") == 0)
-                {
-                    outCols = 8;
-                    outRows = 16;
-                    outWidth = 256;
-                    outHeight = 512;
-                    return true;
-                }
-
-                outCols = 16;
-                outRows = 16;
-                outWidth = 512;
-                outHeight = 512;
-                return true;
-            };
-
-        switch (type)
-        {
-        case 1:  return set_numeric_atlas(1);
-        case 2:  return set_numeric_atlas(2);
-        case 3:  return set_numeric_atlas(3);
-        case 4:  return set_numeric_atlas(4);
-        case 5:  return set_numeric_atlas(5);
-        case 6:  return set_numeric_atlas(6);
-        case 7:  return set_numeric_atlas(7);
-        case 8:  return set_numeric_atlas(8);
-        case 9:  return set_numeric_atlas(9);
-        case 10: return set_numeric_atlas(10);
-        case 11: return set_numeric_atlas(11);
-        case 12: return set_numeric_atlas(12);
-        case 13: return set_numeric_atlas(13);
-        case 14: return set_numeric_atlas(14);
-        case 15: return set_numeric_atlas(15);
-        case 16: return set_numeric_atlas(16);
-        case 17: return set_numeric_atlas(17);
-        case 18: return set_numeric_atlas(18);
-        case 19: return set_numeric_atlas(19);
-        case 20: return set_numeric_atlas(20);
-        case 21: return set_numeric_atlas(21);
-        case 22: return set_numeric_atlas(22);
-        case 23: return set_numeric_atlas(23);
-        case 24: return set_numeric_atlas(24);
-        case 25: return set_common_atlas("icon_somo.dds");
-        case 26: return set_common_atlas("icon_somo.dds");
-        case 27: return set_common_atlas("icon_somo.dds");
-        case 28: return set_common_atlas("icon_somo.dds");
-        case 29: return set_common_atlas("icon_somo.dds");
-        case 30: return set_common_atlas("icon_rapis.dds");
-        case 31: return set_numeric_atlas(31);
-        case 32: return set_numeric_atlas(32);
-        case 33: return set_numeric_atlas(33);
-        case 34: return set_numeric_atlas(34);
-        case 35: return set_numeric_atlas(35);
-        case 36: return set_numeric_atlas(36);
-        case 37: return set_numeric_atlas(37);
-        case 38: return set_numeric_atlas(38);
-        case 39: return set_numeric_atlas(39);
-        case 40: return set_numeric_atlas(40);
-        case 41: return set_common_atlas("icon_somo.dds");
-        case 42: return set_common_atlas("icon_somo.dds");
-        case 43: return set_common_atlas("icon_somo.dds");
-        case 44: return set_common_atlas("icon_somo.dds");
-        case 45: return set_numeric_atlas(1);
-        case 46: return set_numeric_atlas(2);
-        case 47: return set_numeric_atlas(3);
-        case 48: return set_numeric_atlas(4);
-        case 49: return set_numeric_atlas(5);
-        case 50: return set_numeric_atlas(5);
-        case 51: return set_numeric_atlas(6);
-        case 52: return set_numeric_atlas(6);
-        case 53: return set_numeric_atlas(7);
-        case 54: return set_numeric_atlas(7);
-        case 55: return set_numeric_atlas(8);
-        case 56: return set_numeric_atlas(8);
-        case 57: return set_numeric_atlas(9);
-        case 58: return set_numeric_atlas(10);
-        case 59: return set_numeric_atlas(11);
-        case 60: return set_numeric_atlas(12);
-        case 61: return set_numeric_atlas(12);
-        case 62: return set_numeric_atlas(13);
-        case 63: return set_numeric_atlas(13);
-        case 64: return set_numeric_atlas(14);
-        case 65: return set_numeric_atlas(15);
-        case 66: return set_numeric_atlas(16);
-        case 67: return set_numeric_atlas(17);
-        case 68: return set_numeric_atlas(18);
-        case 69: return set_numeric_atlas(19);
-        case 70: return set_numeric_atlas(20);
-        case 71: return set_numeric_atlas(21);
-        case 72: return set_numeric_atlas(16);
-        case 73: return set_numeric_atlas(17);
-        case 74: return set_numeric_atlas(18);
-        case 76: return set_numeric_atlas(20);
-        case 77: return set_numeric_atlas(21);
-        case 82: return set_numeric_atlas(32);
-        case 83: return set_numeric_atlas(33);
-        case 84: return set_numeric_atlas(34);
-        case 85: return set_numeric_atlas(35);
-        case 86: return set_numeric_atlas(36);
-        case 87: return set_numeric_atlas(31);
-        case 88: return set_numeric_atlas(32);
-        case 89: return set_numeric_atlas(33);
-        case 91: return set_numeric_atlas(34);
-        case 92: return set_numeric_atlas(35);
-        case 94: return set_common_atlas("icon_somo.dds");
-        case 95: return set_common_atlas("icon_rapis.dds");
-        case 96: return set_numeric_atlas(23);
-        case 97: return set_numeric_atlas(40);
-        case 99: return set_common_atlas("icon_somo.dds");
-        case 100: return set_common_atlas("icon_somo2.dds");
-        case 101: return set_common_atlas("icon_somo2.dds");
-        case 102: return set_common_atlas("icon_somo3.dds");
-        case 120: return set_common_atlas("icon_pet.dds");
-        case 121: return set_common_atlas("icon_Wing.dds");
-        case 150: return set_common_atlas("icon_DualLayer.dds");
-        default:
+        auto* fileName = item_icon_atlas_file_for_type(type);
+        if (!fileName)
             return false;
-        }
+
+        outFileName = fileName;
+        return item_icon_atlas_layout(outFileName, outCols, outRows, outWidth, outHeight);
     }
 
-    int get_item_icon_atlas_resource_id(const std::string& fileName)
+    LPDIRECT3DTEXTURE9 load_item_icon_game_data_texture(const std::string& fileName, int width, int height)
     {
-        if (fileName.size() == 6 && fileName[2] == '.' && _stricmp(fileName.c_str() + 2, ".dds") == 0)
+        if (fileName.empty())
+            return nullptr;
+
+        ensure_client_icon_atlas_index();
+        auto found = g_clientIconAtlasFiles.find(game_data::lower_ascii(fileName));
+        if (found != g_clientIconAtlasFiles.end() && found->second.size > 0 && found->second.size <= UINT_MAX)
         {
-            auto type = (fileName[0] - '0') * 10 + (fileName[1] - '0');
-            if (type >= 1 && type <= 24)
-                return IDR_ITEM_ICON_01 + type - 1;
-            if (type >= 31 && type <= 40)
-                return IDR_ITEM_ICON_31 + type - 31;
+            std::vector<char> fileData;
+            if (game_data::read_saf_file(found->second.offset, found->second.size, fileData))
+                return create_texture_from_image_memory(g_device, fileData.data(), static_cast<UINT>(fileData.size()));
         }
 
-        if (_stricmp(fileName.c_str(), "icon_DualLayer.dds") == 0)
-            return IDR_ITEM_ICON_DUALLAYER;
-        if (_stricmp(fileName.c_str(), "icon_pet.dds") == 0)
-            return IDR_ITEM_ICON_PET;
-        if (_stricmp(fileName.c_str(), "icon_rapis.dds") == 0)
-            return IDR_ITEM_ICON_RAPIS;
-        if (_stricmp(fileName.c_str(), "icon_somo.dds") == 0)
-            return IDR_ITEM_ICON_SOMO;
-        if (_stricmp(fileName.c_str(), "icon_somo2.dds") == 0)
-            return IDR_ITEM_ICON_SOMO2;
-#ifdef IDR_ITEM_ICON_SOMO3
-        if (_stricmp(fileName.c_str(), "icon_somo3.dds") == 0)
-            return IDR_ITEM_ICON_SOMO3;
-#endif
-        if (_stricmp(fileName.c_str(), "icon_Wing.dds") == 0)
-            return IDR_ITEM_ICON_WING;
-
-        return 0;
-    }
-
-    LPDIRECT3DTEXTURE9 load_item_icon_loose_texture(const std::string& fileName)
-    {
-        if (!g_device || fileName.empty())
+        CTexture texture{};
+        if (!CTexture::CreateFromFile(&texture, get_native_item_icon_folder(), fileName.c_str(), width, height))
             return nullptr;
 
-        auto* folder = get_native_item_icon_folder();
-        if (!folder || !folder[0])
-            return nullptr;
-
-        std::string path = folder;
-        if (!path.empty() && path.back() != '\\' && path.back() != '/')
-            path.push_back('\\');
-        path += fileName;
-
-        std::ifstream stream(path, std::ios::binary);
-        if (!stream)
-            return nullptr;
-
-        std::vector<char> fileData(
-            (std::istreambuf_iterator<char>(stream)),
-            std::istreambuf_iterator<char>());
-        if (fileData.empty())
-            return nullptr;
-
-        return create_texture_from_image_memory(g_device, fileData.data(), static_cast<UINT>(fileData.size()));
-    }
-
-    LPDIRECT3DTEXTURE9 load_item_icon_resource_texture(const std::string& fileName)
-    {
-        if (!g_device)
-            return nullptr;
-
-        auto resourceId = get_item_icon_atlas_resource_id(fileName);
-        if (!resourceId)
-            return nullptr;
-
-        auto module = GetModuleHandleA("sdev-client.dll");
-        if (!module)
-            module = GetModuleHandleA("sdev.dll");
-        if (!module)
-            module = GetModuleHandleA(nullptr);
-
-        auto resource = FindResourceA(module, MAKEINTRESOURCEA(resourceId), MAKEINTRESOURCEA(10));
-        if (!resource)
-            return nullptr;
-
-        auto resourceHandle = LoadResource(module, resource);
-        auto resourceData = resourceHandle ? LockResource(resourceHandle) : nullptr;
-        auto resourceSize = SizeofResource(module, resource);
-        if (!resourceData || !resourceSize)
-            return load_item_icon_loose_texture(fileName);
-
-        return create_texture_from_image_memory(g_device, resourceData, resourceSize);
+        return texture.texture;
     }
 
     LPDIRECT3DTEXTURE9 get_or_load_item_icon_atlas_texture(const std::string& fileName, int width, int height)
@@ -305,7 +227,7 @@ namespace imgui_layer {
         if (!entry.loadAttempted)
         {
             entry.loadAttempted = true;
-            entry.texture = load_item_icon_resource_texture(fileName);
+            entry.texture = load_item_icon_game_data_texture(fileName, width, height);
         }
 
         return entry.texture;
@@ -363,7 +285,7 @@ namespace imgui_layer {
     }
 
     // DDS header structures (subset needed for DXT-compressed icon atlases)
-#pragma pack(push, 1)
+    #pragma pack(push, 1)
     struct DDS_PIXELFORMAT
     {
         DWORD dwSize;
@@ -394,7 +316,7 @@ namespace imgui_layer {
         DWORD dwCaps4;
         DWORD dwReserved2;
     };
-#pragma pack(pop)
+    #pragma pack(pop)
 
     constexpr DWORD kDdsMagic = 0x20534444; // 'DDS '
     constexpr DWORD kDdpfFourCC = 0x4;
@@ -424,7 +346,7 @@ namespace imgui_layer {
         if (header->ddspf.dwFlags & kDdpfFourCC)
         {
             auto fourCC = header->ddspf.dwFourCC;
-            if (fourCC == make_fourcc('D', 'X', 'T', '1')) { format = D3DFMT_DXT1; blockSize = 8; }
+            if (fourCC == make_fourcc('D', 'X', 'T', '1'))      { format = D3DFMT_DXT1; blockSize = 8; }
             else if (fourCC == make_fourcc('D', 'X', 'T', '3')) { format = D3DFMT_DXT3; }
             else if (fourCC == make_fourcc('D', 'X', 'T', '5')) { format = D3DFMT_DXT5; }
         }
