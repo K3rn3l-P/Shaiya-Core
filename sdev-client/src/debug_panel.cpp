@@ -801,6 +801,11 @@ namespace debug_panel
         if (ImGui::CollapsingHeader("Chat options", ImGuiTreeNodeFlags_DefaultOpen))
             draw_parallel_chat();
 
+        ImGui::Separator();
+        ImGui::Checkbox("Roulette Layout Debug", &g_showRouletteLayoutDebugPanel);
+        ImGui::SameLine();
+        ImGui::Checkbox("Battleground Layout Debug", &g_showBattlegroundLayoutDebugPanel);
+
         ImGui::End();
     }
 }

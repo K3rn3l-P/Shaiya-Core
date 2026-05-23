@@ -478,6 +478,12 @@
     <ClCompile Include="src\custom_gm_panel.cpp">
       <Filter>src</Filter>
     </ClCompile>
+    <ClCompile Include="src\imgui_layer_roulette_layout_debug.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\imgui_layer_battleground_layout_debug.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ResourceCompile Include="resources\sdev.rc">

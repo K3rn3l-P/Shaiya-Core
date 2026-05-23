@@ -1,5 +1,5 @@
-#include "include/imgui_layer_internal.h"
 #include <shaiya/include/network/game/outgoing/0800.h>
+#include "include/imgui_layer_internal.h"
 #include "include/shaiya/CDataFile.h"
 #include "include/shaiya/CNetwork.h"
 #include "include/shaiya/ItemInfo.h"
@@ -9,140 +9,6 @@ namespace imgui_layer {
     namespace
     {
         constexpr float kPi = 3.1415926535f;
-        constexpr std::array<ImVec2, 12> kDefaultRouletteSlotCentersRef{
-            ImVec2(836.0f, 183.4f),
-            ImVec2(947.2f, 216.5f),
-            ImVec2(1038.9f, 303.6f),
-            ImVec2(1078.0f, 426.9f),
-            ImVec2(1040.4f, 545.7f),
-            ImVec2(945.7f, 629.8f),
-            ImVec2(833.0f, 655.4f),
-            ImVec2(720.3f, 628.3f),
-            ImVec2(628.6f, 545.7f),
-            ImVec2(589.5f, 425.4f),
-            ImVec2(631.6f, 303.6f),
-            ImVec2(721.8f, 216.5f),
-        };
-
-        struct RouletteLayoutDebugState
-        {
-            bool show = false;
-            bool drawGuides = false;
-            std::array<ImVec2, 12> slotCenters = kDefaultRouletteSlotCentersRef;
-            float slotFrameSize = 80.0f;
-            float iconSize = 60.0f;
-            ImVec2 listMin = ImVec2(52.8f, 115.7f);
-            ImVec2 listSize = ImVec2(312.7f, 738.1f);
-            float listRowHeight = 54.0f;
-            float listRowGap = 8.0f;
-            float listIconSize = 40.0f;
-            ImVec2 listIconOffset = ImVec2(8.0f, 8.0f);
-            float listTextOffsetX = 50.0f;
-            float listLabelY = 5.0f;
-            float listMetaY = 25.0f;
-            ImVec2 guaranteedIconMin = ImVec2(1390.7f, 142.8f);
-            float guaranteedIconSize = 80.0f;
-            float guaranteedCenterX = 1434.3f;
-            float guaranteedLabelY = 233.0f;
-            float guaranteedSpinsY = 288.6f;
-            float guaranteedHintY = 320.2f;
-            float guaranteedLabelWidth = 240.0f;
-            float guaranteedHintWidth = 270.0f;
-            ImVec2 winnersStart = ImVec2(1250.9f, 434.4f);
-            float winnersEndX = 1620.7f;
-            float winnersRowStep = 59.9f;
-            float winnersRowHeight = 58.0f;
-            ImVec2 winnersIconOffset = ImVec2(13.0f, 9.0f);
-            float winnersIconSize = 45.0f;
-            ImVec2 winnersNameOffset = ImVec2(65.0f, 20.0f);
-            float winnersAgeRightPadding = 32.0f;
-            ImVec2 balanceCenter = ImVec2(1432.8f, 814.7f);
-            ImVec2 costCenter = ImVec2(905.1f, 762.1f);
-            ImVec2 footerHintCenter = ImVec2(1441.8f, 859.8f);
-            ImVec2 buttonMin = ImVec2(688.7f, 807.2f);
-            ImVec2 buttonMax = ImVec2(978.8f, 876.4f);
-        };
-
-        inline RouletteLayoutDebugState g_rouletteLayoutDebug{};
-
-        std::string build_roulette_layout_dump()
-        {
-            std::string dump;
-            dump += "Slots:\n";
-            for (size_t i = 0; i < g_rouletteLayoutDebug.slotCenters.size(); ++i)
-            {
-                char line[128]{};
-                std::snprintf(
-                    line,
-                    sizeof(line),
-                    "slot%zu = { %.1ff, %.1ff }\n",
-                    i + 1,
-                    g_rouletteLayoutDebug.slotCenters[i].x,
-                    g_rouletteLayoutDebug.slotCenters[i].y);
-                dump += line;
-            }
-
-            char block[1024]{};
-            std::snprintf(
-                block,
-                sizeof(block),
-                "\nslotFrameSize = %.1ff\niconSize = %.1ff\n"
-                "listMin = { %.1ff, %.1ff }\nlistSize = { %.1ff, %.1ff }\nlistRowHeight = %.1ff\nlistRowGap = %.1ff\n"
-                "listIconSize = %.1ff\nlistIconOffset = { %.1ff, %.1ff }\nlistTextOffsetX = %.1ff\nlistLabelY = %.1ff\nlistMetaY = %.1ff\n"
-                "guaranteedIconMin = { %.1ff, %.1ff }\nguaranteedIconSize = %.1ff\n"
-                "guaranteedCenterX = %.1ff\nguaranteedLabelY = %.1ff\nguaranteedSpinsY = %.1ff\nguaranteedHintY = %.1ff\n"
-                "guaranteedLabelWidth = %.1ff\nguaranteedHintWidth = %.1ff\n"
-                "winnersStart = { %.1ff, %.1ff }\nwinnersEndX = %.1ff\nwinnersRowStep = %.1ff\nwinnersRowHeight = %.1ff\n"
-                "winnersIconOffset = { %.1ff, %.1ff }\nwinnersIconSize = %.1ff\nwinnersNameOffset = { %.1ff, %.1ff }\nwinnersAgeRightPadding = %.1ff\n"
-                "balanceCenter = { %.1ff, %.1ff }\ncostCenter = { %.1ff, %.1ff }\nfooterHintCenter = { %.1ff, %.1ff }\n"
-                "buttonMin = { %.1ff, %.1ff }\nbuttonMax = { %.1ff, %.1ff }\n",
-                g_rouletteLayoutDebug.slotFrameSize,
-                g_rouletteLayoutDebug.iconSize,
-                g_rouletteLayoutDebug.listMin.x,
-                g_rouletteLayoutDebug.listMin.y,
-                g_rouletteLayoutDebug.listSize.x,
-                g_rouletteLayoutDebug.listSize.y,
-                g_rouletteLayoutDebug.listRowHeight,
-                g_rouletteLayoutDebug.listRowGap,
-                g_rouletteLayoutDebug.listIconSize,
-                g_rouletteLayoutDebug.listIconOffset.x,
-                g_rouletteLayoutDebug.listIconOffset.y,
-                g_rouletteLayoutDebug.listTextOffsetX,
-                g_rouletteLayoutDebug.listLabelY,
-                g_rouletteLayoutDebug.listMetaY,
-                g_rouletteLayoutDebug.guaranteedIconMin.x,
-                g_rouletteLayoutDebug.guaranteedIconMin.y,
-                g_rouletteLayoutDebug.guaranteedIconSize,
-                g_rouletteLayoutDebug.guaranteedCenterX,
-                g_rouletteLayoutDebug.guaranteedLabelY,
-                g_rouletteLayoutDebug.guaranteedSpinsY,
-                g_rouletteLayoutDebug.guaranteedHintY,
-                g_rouletteLayoutDebug.guaranteedLabelWidth,
-                g_rouletteLayoutDebug.guaranteedHintWidth,
-                g_rouletteLayoutDebug.winnersStart.x,
-                g_rouletteLayoutDebug.winnersStart.y,
-                g_rouletteLayoutDebug.winnersEndX,
-                g_rouletteLayoutDebug.winnersRowStep,
-                g_rouletteLayoutDebug.winnersRowHeight,
-                g_rouletteLayoutDebug.winnersIconOffset.x,
-                g_rouletteLayoutDebug.winnersIconOffset.y,
-                g_rouletteLayoutDebug.winnersIconSize,
-                g_rouletteLayoutDebug.winnersNameOffset.x,
-                g_rouletteLayoutDebug.winnersNameOffset.y,
-                g_rouletteLayoutDebug.winnersAgeRightPadding,
-                g_rouletteLayoutDebug.balanceCenter.x,
-                g_rouletteLayoutDebug.balanceCenter.y,
-                g_rouletteLayoutDebug.costCenter.x,
-                g_rouletteLayoutDebug.costCenter.y,
-                g_rouletteLayoutDebug.footerHintCenter.x,
-                g_rouletteLayoutDebug.footerHintCenter.y,
-                g_rouletteLayoutDebug.buttonMin.x,
-                g_rouletteLayoutDebug.buttonMin.y,
-                g_rouletteLayoutDebug.buttonMax.x,
-                g_rouletteLayoutDebug.buttonMax.y);
-            dump += block;
-            return dump;
-        }
 
         bool drag_ref_point(const char* id, ImVec2& refPoint, const ImVec2& origin, float scale, float radius = 7.0f)
         {
@@ -1356,105 +1222,6 @@ namespace imgui_layer {
         draw_roulette_composite_panel(canRoll, tokenCount, requiredTokenCount);
     }
 
-    void draw_roulette_layout_debug_panel()
-    {
-    }
-
-    void draw_roulette_button_overlay()
-    {
-        auto& io = ImGui::GetIO();
-        if (!is_overlay_display_usable(io.DisplaySize))
-            return;
-
-        auto buttonSize = kRouletteButtonSize;
-        g_rouletteButtonPosition = clamp_window_position(g_rouletteButtonPosition, buttonSize, io.DisplaySize);
-
-        ImGui::SetNextWindowPos(g_rouletteButtonPosition, ImGuiCond_Always);
-        ImGui::SetNextWindowBgAlpha(0.0f);
-        ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
-        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
-        ImGui::Begin(
-            "##roulette_button_overlay",
-            nullptr,
-            ImGuiWindowFlags_NoDecoration
-            | ImGuiWindowFlags_NoSavedSettings
-            | ImGuiWindowFlags_NoFocusOnAppearing
-            | ImGuiWindowFlags_NoBringToFrontOnFocus
-            | ImGuiWindowFlags_AlwaysAutoResize);
-
-        ImGui::InvisibleButton("##roulette_toggle", buttonSize);
-
-        auto min = ImGui::GetItemRectMin();
-        auto max = ImGui::GetItemRectMax();
-        remember_rect(g_rouletteButtonRect, min, max);
-
-        auto hovered = ImGui::IsItemHovered() || is_cursor_in_rect(g_rouletteButtonRect);
-        auto mouseDown = ImGui::IsMouseDown(ImGuiMouseButton_Left);
-        auto mouseReleased = ImGui::IsMouseReleased(ImGuiMouseButton_Left);
-
-        if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left))
-        {
-            g_draggingRouletteButton = true;
-            g_draggedRouletteButton = false;
-            g_rouletteButtonDragOffset = ImVec2(
-                io.MousePos.x - g_rouletteButtonPosition.x,
-                io.MousePos.y - g_rouletteButtonPosition.y);
-        }
-
-        if (g_draggingRouletteButton && mouseDown)
-        {
-            auto newPos = ImVec2(
-                io.MousePos.x - g_rouletteButtonDragOffset.x,
-                io.MousePos.y - g_rouletteButtonDragOffset.y);
-            auto clamped = clamp_window_position(newPos, buttonSize, io.DisplaySize);
-            if (std::fabs(clamped.x - g_rouletteButtonPosition.x) > 1.0f
-                || std::fabs(clamped.y - g_rouletteButtonPosition.y) > 1.0f)
-            {
-                g_draggedRouletteButton = true;
-                g_rouletteButtonPosition = clamped;
-            }
-        }
-
-        if (mouseReleased && g_draggingRouletteButton)
-        {
-            if (g_draggedRouletteButton)
-                mark_imgui_settings_dirty();
-            else if (hovered)
-                g_showPanel = !g_showPanel;
-
-            g_draggingRouletteButton = false;
-            g_draggedRouletteButton = false;
-            release_imgui_capture();
-        }
-
-        auto drawList = ImGui::GetWindowDrawList();
-        auto* texture = load_roulette_icon_texture();
-        auto tint = IM_COL32(255, 255, 255, hovered ? 255 : 230);
-        if (texture)
-        {
-            drawList->AddImage(reinterpret_cast<ImTextureID>(texture), min, max,
-                ImVec2(0.0f, 0.0f), ImVec2(1.0f, 1.0f), tint);
-        }
-        else
-        {
-            draw_icon_button_fallback(drawList, min, max, tint, IM_COL32(31, 24, 37, 225), "O");
-        }
-
-        if (hovered)
-            drawList->AddRectFilled(min, max, IM_COL32(255, 255, 255, 28), 4.0f);
-
-        if (hovered)
-        {
-            ImGui::SetNextWindowPos(ImVec2(min.x - 2.0f, min.y - 24.0f), ImGuiCond_Always);
-            ImGui::BeginTooltip();
-            ImGui::TextUnformatted(g_showPanel ? "Hide roulette" : "Show roulette");
-            ImGui::EndTooltip();
-        }
-
-        ImGui::End();
-        ImGui::PopStyleVar(2);
-    }
-
     void draw_panel_shell()
     {
         auto scaledW = kPanelFixedW * g_panelScale;
@@ -1588,6 +1355,101 @@ namespace imgui_layer {
         ImGui::End();
         ImGui::PopStyleVar();
         g_showPanel = panelOpen;
+    }
+
+    void draw_roulette_button_overlay()
+    {
+        auto& io = ImGui::GetIO();
+        if (!is_overlay_display_usable(io.DisplaySize))
+            return;
+
+        auto buttonSize = kRouletteButtonSize;
+        g_rouletteButtonPosition = clamp_window_position(g_rouletteButtonPosition, buttonSize, io.DisplaySize);
+
+        ImGui::SetNextWindowPos(g_rouletteButtonPosition, ImGuiCond_Always);
+        ImGui::SetNextWindowBgAlpha(0.0f);
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
+        ImGui::Begin(
+            "##roulette_button_overlay",
+            nullptr,
+            ImGuiWindowFlags_NoDecoration
+            | ImGuiWindowFlags_NoSavedSettings
+            | ImGuiWindowFlags_NoFocusOnAppearing
+            | ImGuiWindowFlags_NoBringToFrontOnFocus
+            | ImGuiWindowFlags_AlwaysAutoResize);
+
+        ImGui::InvisibleButton("##roulette_toggle", buttonSize);
+
+        auto min = ImGui::GetItemRectMin();
+        auto max = ImGui::GetItemRectMax();
+        remember_rect(g_rouletteButtonRect, min, max);
+
+        auto hovered = ImGui::IsItemHovered() || is_cursor_in_rect(g_rouletteButtonRect);
+        auto mouseDown = ImGui::IsMouseDown(ImGuiMouseButton_Left);
+        auto mouseReleased = ImGui::IsMouseReleased(ImGuiMouseButton_Left);
+
+        if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left))
+        {
+            g_draggingRouletteButton = true;
+            g_draggedRouletteButton = false;
+            g_rouletteButtonDragOffset = ImVec2(
+                io.MousePos.x - g_rouletteButtonPosition.x,
+                io.MousePos.y - g_rouletteButtonPosition.y);
+        }
+
+        if (g_draggingRouletteButton && mouseDown)
+        {
+            auto newPos = ImVec2(
+                io.MousePos.x - g_rouletteButtonDragOffset.x,
+                io.MousePos.y - g_rouletteButtonDragOffset.y);
+            auto clamped = clamp_window_position(newPos, buttonSize, io.DisplaySize);
+            if (std::fabs(clamped.x - g_rouletteButtonPosition.x) > 1.0f
+                || std::fabs(clamped.y - g_rouletteButtonPosition.y) > 1.0f)
+            {
+                g_draggedRouletteButton = true;
+                g_rouletteButtonPosition = clamped;
+            }
+        }
+
+        if (mouseReleased && g_draggingRouletteButton)
+        {
+            if (g_draggedRouletteButton)
+                mark_imgui_settings_dirty();
+            else if (hovered)
+                g_showPanel = !g_showPanel;
+
+            g_draggingRouletteButton = false;
+            g_draggedRouletteButton = false;
+            release_imgui_capture();
+        }
+
+        auto drawList = ImGui::GetWindowDrawList();
+        auto* texture = load_roulette_icon_texture();
+        auto tint = IM_COL32(255, 255, 255, hovered ? 255 : 230);
+        if (texture)
+        {
+            drawList->AddImage(reinterpret_cast<ImTextureID>(texture), min, max,
+                ImVec2(0.0f, 0.0f), ImVec2(1.0f, 1.0f), tint);
+        }
+        else
+        {
+            draw_icon_button_fallback(drawList, min, max, tint, IM_COL32(31, 24, 37, 225), "O");
+        }
+
+        if (hovered)
+            drawList->AddRectFilled(min, max, IM_COL32(255, 255, 255, 28), 4.0f);
+
+        if (hovered)
+        {
+            ImGui::SetNextWindowPos(ImVec2(min.x - 2.0f, min.y - 24.0f), ImGuiCond_Always);
+            ImGui::BeginTooltip();
+            ImGui::TextUnformatted(g_showPanel ? "Hide roulette" : "Show roulette");
+            ImGui::EndTooltip();
+        }
+
+        ImGui::End();
+        ImGui::PopStyleVar(2);
     }
 
 } // namespace imgui_layer

@@ -957,6 +957,9 @@ namespace imgui_layer {
             if (id <= 0)
                 return nullptr;
 
+            if (auto* overrideTexture = get_battleground_debug_override_texture(BattlegroundDebugImageSlot::MapNative))
+                return overrideTexture;
+
             auto& textureState = get_battleground_map_texture_state(g_battlegroundMapTextures, id);
             char relativePath[64]{};
             std::snprintf(relativePath, sizeof(relativePath), "assets\\maps\\native\\%d.png", id);
@@ -967,6 +970,9 @@ namespace imgui_layer {
         {
             if (id <= 0)
                 return nullptr;
+
+            if (auto* overrideTexture = get_battleground_debug_override_texture(BattlegroundDebugImageSlot::MapCurrent))
+                return overrideTexture;
 
             auto& textureState = get_battleground_map_texture_state(g_battlegroundCurrentMapTextures, id);
             char relativePath[80]{};
@@ -979,6 +985,9 @@ namespace imgui_layer {
             if (id <= 0)
                 return nullptr;
 
+            if (auto* overrideTexture = get_battleground_debug_override_texture(BattlegroundDebugImageSlot::MapDisabled))
+                return overrideTexture;
+
             auto& textureState = get_battleground_map_texture_state(g_battlegroundDisabledMapTextures, id);
             char relativePath[82]{};
             std::snprintf(relativePath, sizeof(relativePath), "assets\\maps\\disabled\\%d.png", id);
@@ -987,6 +996,9 @@ namespace imgui_layer {
 
         LPDIRECT3DTEXTURE9 get_battleground_background_texture()
         {
+            if (auto* overrideTexture = get_battleground_debug_override_texture(BattlegroundDebugImageSlot::Background))
+                return overrideTexture;
+
             auto& textureState = g_battlegroundBackgroundTexture;
             ensure_battleground_asset_lookup("assets\\maps\\panel\\background.png", textureState);
 
@@ -1017,6 +1029,9 @@ namespace imgui_layer {
 
         LPDIRECT3DTEXTURE9 get_battleground_button_texture(const char* relativePath, BattlegroundMapTexture& textureState)
         {
+            if (auto* overrideTexture = get_battleground_debug_override_texture_for_path(relativePath))
+                return overrideTexture;
+
             ensure_battleground_asset_lookup(relativePath, textureState);
 
             if (textureState.loadAttempted)
@@ -1221,13 +1236,17 @@ namespace imgui_layer {
                 drawList->AddRect(pos, ImVec2(pos.x + size.x, pos.y + size.y), IM_COL32(162, 132, 92, 255), 10.0f, 0, 2.0f);
             }
 
-            constexpr float kBackgroundNativeWidth = 902.0f;
-            constexpr float kBackgroundNativeHeight = 572.0f;
-            auto scaleX = size.x / kBackgroundNativeWidth;
-            auto scaleY = size.y / kBackgroundNativeHeight;
+            auto nativeW = std::max(1.0f, g_battlegroundLayoutDebug.backgroundNativeWidth);
+            auto nativeH = std::max(1.0f, g_battlegroundLayoutDebug.backgroundNativeHeight);
+            auto scaleX = size.x / nativeW;
+            auto scaleY = size.y / nativeH;
 
-            auto closeSize = ImVec2(26.0f * scaleX, 26.0f * scaleY);
-            auto closePos = ImVec2(pos.x + (size.x - (44.0f * scaleX)), pos.y + (24.0f * scaleY));
+            auto closeSize = ImVec2(
+                std::max(8.0f, g_battlegroundLayoutDebug.closeButtonSize.x) * scaleX,
+                std::max(8.0f, g_battlegroundLayoutDebug.closeButtonSize.y) * scaleY);
+            auto closePos = ImVec2(
+                pos.x + (size.x - (g_battlegroundLayoutDebug.closeRightOffset * scaleX)),
+                pos.y + (g_battlegroundLayoutDebug.closeTopOffset * scaleY));
             if (draw_battleground_icon_button(
                 "bg_close",
                 get_battleground_button_texture("assets\\maps\\panel\\button_close.png", g_battlegroundCloseButtonTexture),
@@ -1239,29 +1258,33 @@ namespace imgui_layer {
                 release_imgui_capture();
             }
 
-            constexpr int kColumns = 3;
-            constexpr int kRows = 4;
-            constexpr int kPageSize = kColumns * kRows;
+            auto columns = std::clamp(g_battlegroundLayoutDebug.gridColumns, 1, 8);
+            auto rows = std::clamp(g_battlegroundLayoutDebug.gridRows, 1, 8);
+            auto pageSize = columns * rows;
             const int totalEntries = static_cast<int>(g_battlegroundEntries.size());
-            const int totalPages = std::max(1, (totalEntries + kPageSize - 1) / kPageSize);
+            const int totalPages = std::max(1, (totalEntries + pageSize - 1) / pageSize);
             g_battlegroundPage = std::clamp(g_battlegroundPage, 0, totalPages - 1);
 
-            auto gridMin = ImVec2(pos.x + (36.0f * scaleX), pos.y + (80.0f * scaleY));
-            auto gridMax = ImVec2(pos.x + (866.0f * scaleX), pos.y + (490.0f * scaleY));
-            auto cellWidth = (gridMax.x - gridMin.x) / static_cast<float>(kColumns);
-            auto cellHeight = (gridMax.y - gridMin.y) / static_cast<float>(kRows);
+            auto gridMin = ImVec2(
+                pos.x + (g_battlegroundLayoutDebug.gridMin.x * scaleX),
+                pos.y + (g_battlegroundLayoutDebug.gridMin.y * scaleY));
+            auto gridMax = ImVec2(
+                pos.x + (g_battlegroundLayoutDebug.gridMax.x * scaleX),
+                pos.y + (g_battlegroundLayoutDebug.gridMax.y * scaleY));
+            auto cellWidth = (gridMax.x - gridMin.x) / static_cast<float>(columns);
+            auto cellHeight = (gridMax.y - gridMin.y) / static_cast<float>(rows);
 
-            auto cardInsetX = 8.0f * scaleX;
-            auto cardInsetY = 6.0f * scaleY;
+            auto cardInsetX = g_battlegroundLayoutDebug.cardInset.x * scaleX;
+            auto cardInsetY = g_battlegroundLayoutDebug.cardInset.y * scaleY;
             auto cardWidth = cellWidth - (cardInsetX * 2.0f);
             auto cardHeight = cellHeight - (cardInsetY * 2.0f);
 
-            for (int row = 0; row < kRows; ++row)
+            for (int row = 0; row < rows; ++row)
             {
-                for (int col = 0; col < kColumns; ++col)
+                for (int col = 0; col < columns; ++col)
                 {
-                    auto indexOnPage = row * kColumns + col;
-                    auto entryIndex = g_battlegroundPage * kPageSize + indexOnPage;
+                    auto indexOnPage = row * columns + col;
+                    auto entryIndex = g_battlegroundPage * pageSize + indexOnPage;
                     auto cellPos = ImVec2(
                         gridMin.x + col * cellWidth + cardInsetX,
                         gridMin.y + row * cellHeight + cardInsetY);
@@ -1282,12 +1305,14 @@ namespace imgui_layer {
             }
 
             auto centerX = pos.x + (size.x * 0.5f);
-            auto navY = pos.y + (526.0f * scaleY);
-            auto navButtonSize = ImVec2(36.0f * scaleX, 24.0f * scaleY);
+            auto navY = pos.y + (g_battlegroundLayoutDebug.navY * scaleY);
+            auto navButtonSize = ImVec2(
+                std::max(8.0f, g_battlegroundLayoutDebug.navButtonSize.x) * scaleX,
+                std::max(8.0f, g_battlegroundLayoutDebug.navButtonSize.y) * scaleY);
             char pageLabel[32]{};
             std::snprintf(pageLabel, sizeof(pageLabel), "%d / %d", g_battlegroundPage + 1, totalPages);
             auto pageTextSize = ImGui::CalcTextSize(pageLabel);
-            auto navGap = 10.0f * scaleX;
+            auto navGap = g_battlegroundLayoutDebug.navGap * scaleX;
             auto navGroupWidth = navButtonSize.x * 2.0f + navGap * 2.0f + pageTextSize.x;
             auto navStartX = centerX - (navGroupWidth * 0.5f);
 
@@ -1299,7 +1324,7 @@ namespace imgui_layer {
                 "<");
 
             auto textX = navStartX + navButtonSize.x + navGap;
-            auto textY = navY + ((navButtonSize.y - pageTextSize.y) * 0.5f) - (1.0f * scaleY);
+            auto textY = navY + ((navButtonSize.y - pageTextSize.y) * 0.5f) + (g_battlegroundLayoutDebug.navTextYOffset * scaleY);
             ImGui::SetCursorScreenPos(ImVec2(textX, textY));
             ImGui::TextColored(ImVec4(0.96f, 0.89f, 0.78f, 1.0f), "%s", pageLabel);
 
@@ -1309,6 +1334,14 @@ namespace imgui_layer {
                 ImVec2(navStartX + navButtonSize.x + navGap + pageTextSize.x + navGap, navY),
                 navButtonSize,
                 ">");
+
+            if (g_battlegroundLayoutDebug.drawGuides)
+            {
+                drawList->AddRect(gridMin, gridMax, IM_COL32(255, 180, 30, 180), 0.0f, 0, 1.5f);
+                drawList->AddCircleFilled(closePos, 4.0f, IM_COL32(255, 90, 90, 220), 12);
+                drawList->AddCircleFilled(ImVec2(navStartX, navY), 4.0f, IM_COL32(90, 210, 255, 220), 12);
+                drawList->AddCircleFilled(ImVec2(navStartX + navButtonSize.x + navGap + pageTextSize.x + navGap, navY), 4.0f, IM_COL32(90, 210, 255, 220), 12);
+            }
 
             if (prevClicked && g_battlegroundPage > 0)
             {

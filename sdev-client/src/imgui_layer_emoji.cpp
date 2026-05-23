@@ -481,7 +481,30 @@ namespace imgui_layer
 
     LPDIRECT3DTEXTURE9 load_roulette_bg_texture()
     {
+        if (auto* overrideTexture = get_roulette_debug_override_texture(RouletteDebugImageSlot::Background))
+            return overrideTexture;
         return load_saf_texture(g_rouletteBgTexture, g_rouletteBgLoadAttempted, g_rouletteBgFound, g_rouletteBgDataOffset, g_rouletteBgDataSize);
+    }
+
+    LPDIRECT3DTEXTURE9 load_roulette_dragon_texture()
+    {
+        if (auto* overrideTexture = get_roulette_debug_override_texture(RouletteDebugImageSlot::Dragon))
+            return overrideTexture;
+        return load_saf_texture(g_rouletteDragonTexture, g_rouletteDragonLoadAttempted, g_rouletteDragonFound, g_rouletteDragonDataOffset, g_rouletteDragonDataSize);
+    }
+
+    LPDIRECT3DTEXTURE9 load_roulette_left_panel_texture()
+    {
+        if (auto* overrideTexture = get_roulette_debug_override_texture(RouletteDebugImageSlot::LeftPanel))
+            return overrideTexture;
+        return load_saf_texture(g_rouletteLeftPanelTexture, g_rouletteLeftPanelLoadAttempted, g_rouletteLeftPanelFound, g_rouletteLeftPanelDataOffset, g_rouletteLeftPanelDataSize);
+    }
+
+    LPDIRECT3DTEXTURE9 load_roulette_right_panel_texture()
+    {
+        if (auto* overrideTexture = get_roulette_debug_override_texture(RouletteDebugImageSlot::RightPanel))
+            return overrideTexture;
+        return load_saf_texture(g_rouletteRightPanelTexture, g_rouletteRightPanelLoadAttempted, g_rouletteRightPanelFound, g_rouletteRightPanelDataOffset, g_rouletteRightPanelDataSize);
     }
 
     LPDIRECT3DTEXTURE9 load_reward_icon_texture()

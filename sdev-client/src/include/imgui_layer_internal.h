@@ -318,6 +318,122 @@ namespace imgui_layer
     constexpr float kPanelFixedH = 670.0f;
     constexpr const char* kPanelScaleKey = "PANEL_SCALE";
 
+    constexpr std::array<ImVec2, 12> kDefaultRouletteSlotCentersRef{
+        ImVec2(836.0f, 183.4f),
+        ImVec2(947.2f, 216.5f),
+        ImVec2(1038.9f, 303.6f),
+        ImVec2(1078.0f, 426.9f),
+        ImVec2(1040.4f, 545.7f),
+        ImVec2(945.7f, 629.8f),
+        ImVec2(833.0f, 655.4f),
+        ImVec2(720.3f, 628.3f),
+        ImVec2(628.6f, 545.7f),
+        ImVec2(589.5f, 425.4f),
+        ImVec2(631.6f, 303.6f),
+        ImVec2(721.8f, 216.5f),
+    };
+
+    struct RouletteLayoutDebugState
+    {
+        bool show = false;
+        bool drawGuides = false;
+        std::array<ImVec2, 12> slotCenters = kDefaultRouletteSlotCentersRef;
+        float slotFrameSize = 80.0f;
+        float iconSize = 60.0f;
+        ImVec2 listMin = ImVec2(52.8f, 115.7f);
+        ImVec2 listSize = ImVec2(312.7f, 738.1f);
+        float listRowHeight = 54.0f;
+        float listRowGap = 8.0f;
+        float listIconSize = 40.0f;
+        ImVec2 listIconOffset = ImVec2(8.0f, 8.0f);
+        float listTextOffsetX = 50.0f;
+        float listLabelY = 5.0f;
+        float listMetaY = 25.0f;
+        ImVec2 guaranteedIconMin = ImVec2(1390.7f, 142.8f);
+        float guaranteedIconSize = 80.0f;
+        float guaranteedCenterX = 1434.3f;
+        float guaranteedLabelY = 233.0f;
+        float guaranteedSpinsY = 288.6f;
+        float guaranteedHintY = 320.2f;
+        float guaranteedLabelWidth = 240.0f;
+        float guaranteedHintWidth = 270.0f;
+        ImVec2 winnersStart = ImVec2(1250.9f, 434.4f);
+        float winnersEndX = 1620.7f;
+        float winnersRowStep = 59.9f;
+        float winnersRowHeight = 58.0f;
+        ImVec2 winnersIconOffset = ImVec2(13.0f, 9.0f);
+        float winnersIconSize = 45.0f;
+        ImVec2 winnersNameOffset = ImVec2(65.0f, 20.0f);
+        float winnersAgeRightPadding = 32.0f;
+        ImVec2 balanceCenter = ImVec2(1432.8f, 814.7f);
+        ImVec2 costCenter = ImVec2(905.1f, 762.1f);
+        ImVec2 footerHintCenter = ImVec2(1441.8f, 859.8f);
+        ImVec2 buttonMin = ImVec2(688.7f, 807.2f);
+        ImVec2 buttonMax = ImVec2(978.8f, 876.4f);
+    };
+
+    inline RouletteLayoutDebugState g_rouletteLayoutDebug{};
+    inline bool g_showRouletteLayoutDebugPanel = false;
+
+    struct BattlegroundLayoutDebugState
+    {
+        bool drawGuides = false;
+        float backgroundNativeWidth = 902.0f;
+        float backgroundNativeHeight = 572.0f;
+
+        float closeRightOffset = 44.0f;
+        float closeTopOffset = 24.0f;
+        ImVec2 closeButtonSize = ImVec2(26.0f, 26.0f);
+
+        int gridColumns = 3;
+        int gridRows = 4;
+        ImVec2 gridMin = ImVec2(36.0f, 80.0f);
+        ImVec2 gridMax = ImVec2(866.0f, 490.0f);
+        ImVec2 cardInset = ImVec2(8.0f, 6.0f);
+
+        float navY = 526.0f;
+        ImVec2 navButtonSize = ImVec2(36.0f, 24.0f);
+        float navGap = 10.0f;
+        float navTextYOffset = -1.0f;
+    };
+
+    inline BattlegroundLayoutDebugState g_battlegroundLayoutDebug{};
+    inline bool g_showBattlegroundLayoutDebugPanel = false;
+
+    enum class RouletteDebugImageSlot : uint8_t
+    {
+        Background = 0,
+        Dragon,
+        LeftPanel,
+        RightPanel,
+        Count
+    };
+
+    struct RouletteDebugImageOverride
+    {
+        std::string path;
+        LPDIRECT3DTEXTURE9 texture = nullptr;
+        bool enabled = false;
+        bool loadAttempted = false;
+        std::string status;
+    };
+
+    inline std::array<RouletteDebugImageOverride, static_cast<std::size_t>(RouletteDebugImageSlot::Count)> g_rouletteDebugImageOverrides;
+
+    enum class BattlegroundDebugImageSlot : uint8_t
+    {
+        Background = 0,
+        CloseButton,
+        PrevButton,
+        NextButton,
+        MapNative,
+        MapCurrent,
+        MapDisabled,
+        Count
+    };
+
+    inline std::array<RouletteDebugImageOverride, static_cast<std::size_t>(BattlegroundDebugImageSlot::Count)> g_battlegroundDebugImageOverrides;
+
     // -----------------------------------------------------------------------
     //  Shared types
     // -----------------------------------------------------------------------
@@ -479,6 +595,10 @@ namespace imgui_layer
     void draw_npc_panel();
     void draw_npc_button_overlay();
     void draw_battleground_panel();
+    void draw_battleground_layout_debug_panel();
+    std::string build_battleground_layout_dump();
+    LPDIRECT3DTEXTURE9 get_battleground_debug_override_texture(BattlegroundDebugImageSlot slot);
+    LPDIRECT3DTEXTURE9 get_battleground_debug_override_texture_for_path(const char* relativePath);
     void release_battleground_map_textures();
 
     // imgui_layer_items.cpp
@@ -499,6 +619,9 @@ namespace imgui_layer
     void draw_panel_header(bool& panelOpen);
     void draw_panel_shell();
     void draw_roulette_button_overlay();
+    void draw_roulette_layout_debug_panel();
+    std::string build_roulette_layout_dump();
+    LPDIRECT3DTEXTURE9 get_roulette_debug_override_texture(RouletteDebugImageSlot slot);
     uint8_t roulette_item_count();
     const char* roulette_result_label(uint8_t result);
     void request_roulette_list();

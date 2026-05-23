@@ -637,6 +637,8 @@ namespace imgui_layer
         custom_gm_panel::render();
         debug_panel::render();
         debug_panel::render_ingame_chat();
+        draw_roulette_layout_debug_panel();
+        draw_battleground_layout_debug_panel();
 
         if (g_showPanel)
             draw_panel_shell();

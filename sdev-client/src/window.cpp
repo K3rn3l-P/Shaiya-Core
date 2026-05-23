@@ -1,25 +1,125 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <winsock2.h>
+#include <ws2tcpip.h>
 #include <util/util.h>
 #include <imm.h>
 #include <array>
 #include <algorithm>
+#include <thread>
+#include <chrono>
+#include <vector>
+#include <string>
+#include <atomic>
+#include <mutex>
 #include <shaiya/include/network/game/incoming/0800.h>
 #include "include/main.h"
 #include "include/shaiya/CNetwork.h"
 #include "include/shaiya/CQuickSlot.h"
 #include "include/shaiya/Static.h" // g_var client/window state
 #include "include/shaiya/Unknown.h"
+
 using namespace shaiya;
 #pragma comment(lib, "imm32.lib")
+#pragma comment(lib, "ws2_32.lib")
 
 namespace window
 {
+    namespace config {
+        const char* ping_ip = "100.95.179.88"; // IP local do servidor do jogo
+        const int server_port = 30800;
+        const wchar_t* title_base = L"Shaiya Duff";
+        char* char_name_ptr = reinterpret_cast<char*>(0x09144CE);
+
+        const std::vector<std::wstring> custom_messages = {
+            L"Enjoy the game!",
+            L"Follow us on social media!",
+            L"Check out our website!",
+            L"Join our community!",
+            L"Participate in events!",
+            L"Share your achievements!",
+            L"Invite your friends!",
+            L"Look Roulette!",
+            L"Show Rewards!"
+        };
+    }
+
     inline HWND g_hookedGameHwnd = nullptr;
     inline WNDPROC g_originalGameWndProc = nullptr;
     inline bool g_hwndIsUnicode = false;
-    constexpr wchar_t kDefaultGameWindowTitle[] = L"Shaiya";
     inline DWORD g_nextTitleRefreshTick = 0;
+
+    inline std::atomic<int> g_message_index{ 0 };
+    wchar_t g_dynamicTitleBuffer[256] = L"Shaiya";
+    std::atomic<bool> g_winsock_initialized{ false };
+
+    bool InitWinsockOnce() {
+        bool expected = false;
+        if (g_winsock_initialized.compare_exchange_strong(expected, true)) {
+            WSADATA wsa;
+            if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
+                g_winsock_initialized.store(false);
+                return false;
+            }
+        }
+        return true;
+    }
+
+    std::pair<int, int> GetNetworkStats(const char* ip, int port) {
+        if (!InitWinsockOnce()) return { -1, 100 };
+        SOCKET sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+        if (sock == INVALID_SOCKET) return { -1, 100 };
+
+        u_long mode = 1; ioctlsocket(sock, FIONBIO, &mode);
+        sockaddr_in server{};
+        server.sin_family = AF_INET;
+        server.sin_port = htons(port);
+        inet_pton(AF_INET, ip, &server.sin_addr);
+
+        auto start = std::chrono::steady_clock::now();
+        connect(sock, (SOCKADDR*)&server, sizeof(server));
+
+        fd_set writefds; FD_ZERO(&writefds); FD_SET(sock, &writefds);
+        timeval timeout{ 1, 0 }; // 1s timeout
+        if (select(0, nullptr, &writefds, nullptr, &timeout) <= 0) {
+            closesocket(sock); return { -1, 100 };
+        }
+
+        auto end = std::chrono::steady_clock::now();
+        int ping = static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count());
+        closesocket(sock);
+        return { ping, 0 };
+    }
+
+    const char* SafeReadCharName(char* ptr) {
+        if (!ptr || IsBadReadPtr(ptr, 1) || ptr[0] == '\0') return nullptr;
+        return ptr;
+    }
+
+    void UpdateWindowTitleLoop() {
+        while (true) {
+            auto [ping, loss] = GetNetworkStats(config::ping_ip, config::server_port);
+            std::wstring ping_text = (ping >= 0) ? std::to_wstring(ping) : L"--";
+            int msg_idx = (g_message_index.fetch_add(1)) % config::custom_messages.size();
+            std::wstring dyn_text = config::custom_messages[msg_idx];
+            const char* safe_name = SafeReadCharName(config::char_name_ptr);
+            wchar_t w_char_name[32]{};
+
+            if (safe_name) {
+                if (MultiByteToWideChar(CP_UTF8, 0, safe_name, -1, w_char_name, 32) <= 0) {
+                    MultiByteToWideChar(CP_ACP, 0, safe_name, -1, w_char_name, 32);
+                }
+            }
+            else {
+                wcscpy_s(w_char_name, L"No character selected");
+            }
+
+            swprintf(g_dynamicTitleBuffer, 256, L"%s - Playing as %s | ping/ms: %s | %s",
+                config::title_base, w_char_name, ping_text.c_str(), dyn_text.c_str());
+
+            std::this_thread::sleep_for(std::chrono::seconds(3));
+        }
+    }
 
     void refresh_game_window_title(HWND hwnd, bool force)
     {
@@ -31,10 +131,10 @@ namespace window
             return;
 
         g_nextTitleRefreshTick = now + 1000;
-        DefWindowProcW(hwnd, WM_SETTEXT, 0, reinterpret_cast<LPARAM>(kDefaultGameWindowTitle));
+        DefWindowProcW(hwnd, WM_SETTEXT, 0, reinterpret_cast<LPARAM>(g_dynamicTitleBuffer));
     }
 
-    void copy_composition_string(HIMC context, DWORD index, wchar_t (&output)[64])
+    void copy_composition_string(HIMC context, DWORD index, wchar_t(&output)[64])
     {
         output[0] = L'\0';
         if (!context)
@@ -58,10 +158,6 @@ namespace window
 
     bool inject_unicode_textbox_input(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
     {
-        // The main GAME window is upgraded to Unicode by patch.cpp. For Unicode
-        // HWNDs, composed input such as Vietnamese arrives as real UTF-16
-        // WM_CHAR/IME text; feed that directly into the game's UTF-8 textbox
-        // buffer instead of letting the stock ANSI path collapse it to '?'.
         if (IsWindowUnicode(hwnd) && msg == WM_CHAR && wParam == VK_BACK)
         {
             auto textBox = &g_var->input.textBox;
@@ -91,9 +187,6 @@ namespace window
 
         auto textBox = &g_var->input.textBox;
 
-        // Feed the final IME/Unicode result as a complete UTF-8 sequence instead
-        // of one ANSI byte at a time. This avoids the stock textbox path turning
-        // Vietnamese characters into '?' before they reach the chat buffer.
         for (auto* current = result; *current; ++current)
         {
             append_utf8_textbox_wchar(textBox, *current);
@@ -123,15 +216,9 @@ namespace window
         if (handle_imgui_layer_wnd_proc(hwnd, msg, wParam, lParam, imguiResult))
             return imguiResult;
 
-        // The UTF-8 window upgrade can leave legacy title writes truncated to
-        // "S". Only refresh on low-frequency messages where the title may have
-        // been corrupted — not on every mouse/paint/input message.
-        if (msg == WM_ACTIVATE || msg == WM_ACTIVATEAPP || msg == WM_SHOWWINDOW
-            || msg == WM_DISPLAYCHANGE || msg == WM_SIZE)
+        if (msg != WM_SETTEXT)
             refresh_game_window_title(hwnd, false);
 
-        // Run before the original client WndProc so Unicode chat input never
-        // reaches the legacy single-byte handler.
         if (inject_unicode_textbox_input(hwnd, msg, wParam, lParam))
             return 0;
 
@@ -153,13 +240,6 @@ namespace window
         {
             auto token = reinterpret_cast<const char*>(lParam);
             append_utf8_textbox_text(&g_var->input.textBox, token);
-            return 0;
-        }
-
-        if (msg == kClientGMCommandWindowMessage)
-        {
-            auto command = reinterpret_cast<const char*>(lParam);
-            append_utf8_textbox_text(&g_var->input.textBox, command);
             return 0;
         }
 
@@ -187,6 +267,11 @@ namespace window
         g_hookedGameHwnd = hwnd;
         g_hwndIsUnicode = IsWindowUnicode(hwnd) != FALSE;
 
+        static std::once_flag titleThreadFlag;
+        std::call_once(titleThreadFlag, []() {
+            std::thread(UpdateWindowTitleLoop).detach();
+            });
+
         refresh_game_window_title(hwnd, true);
     }
 
@@ -201,48 +286,37 @@ namespace window
 }
 
 unsigned u0x42B826 = 0x42B826;
-void __declspec(naked) naked_0x42B820() 
+void __declspec(naked) naked_0x42B820()
 {
     __asm
     {
-        // original
-        mov [esi+0x2A0],ecx
-
+        mov[esi + 0x2A0], ecx
         pushad
-
         push esi
         call window::assign_windows1
-        add esp,0x4
-
+        add esp, 0x4
         popad
-
         jmp u0x42B826
     }
 }
 
 unsigned u0x42B9D7 = 0x42B9D7;
-void __declspec(naked) naked_0x42B9D1() 
+void __declspec(naked) naked_0x42B9D1()
 {
     __asm
     {
-        // original
-        mov [esi+0x370],ecx
-
+        mov[esi + 0x370], ecx
         pushad
-
         push esi
         call window::assign_windows2
-        add esp,0x4
-
+        add esp, 0x4
         popad
-
         jmp u0x42B9D7
     }
 }
 
 void hook::window()
 {
-    // assign windows
     util::detour((void*)0x42B820, naked_0x42B820, 6);
     util::detour((void*)0x42B9D1, naked_0x42B9D1, 6);
 }
