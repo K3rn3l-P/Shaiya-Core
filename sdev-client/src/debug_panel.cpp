@@ -78,9 +78,9 @@ namespace debug_panel
             custom_chat::render_options();
 
         ImGui::Separator();
-        ImGui::Checkbox("Roulette Layout Debug", &g_showRouletteLayoutDebugPanel);
+        ImGui::Checkbox("Roulette Layout Debug", &imgui_layer::g_showRouletteLayoutDebugPanel);
         ImGui::SameLine();
-        ImGui::Checkbox("Battleground Layout Debug", &g_showBattlegroundLayoutDebugPanel);
+        ImGui::Checkbox("Battleground Layout Debug", &imgui_layer::g_showBattlegroundLayoutDebugPanel);
 
         ImGui::End();
     }
