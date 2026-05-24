@@ -18,10 +18,38 @@ namespace imgui_layer
                 if (overrideEntry.texture)
                     overrideEntry.texture->Release();
                 overrideEntry.texture = nullptr;
+                for (auto& frame : overrideEntry.frames)
+                {
+                    if (frame.texture)
+                        frame.texture->Release();
+                }
+                overrideEntry.frames.clear();
                 overrideEntry.enabled = false;
                 overrideEntry.loadAttempted = false;
+                overrideEntry.frameCount = 0;
+                overrideEntry.resolvedSource.clear();
                 overrideEntry.status.clear();
             }
+        }
+
+        void draw_override_preview(const char* id, LPDIRECT3DTEXTURE9 texture)
+        {
+            if (!texture)
+                return;
+
+            D3DSURFACE_DESC desc{};
+            if (FAILED(texture->GetLevelDesc(0, &desc)) || desc.Width == 0 || desc.Height == 0)
+                return;
+
+            constexpr float kMaxW = 180.0f;
+            constexpr float kMaxH = 72.0f;
+            auto scale = std::min(kMaxW / static_cast<float>(desc.Width), kMaxH / static_cast<float>(desc.Height));
+            scale = std::min(scale, 1.0f);
+
+            ImGui::TextDisabled("Preview:");
+            ImGui::PushID(id);
+            ImGui::Image(reinterpret_cast<ImTextureID>(texture), ImVec2(desc.Width * scale, desc.Height * scale));
+            ImGui::PopID();
         }
 
         void input_vec2(const char* label, ImVec2& value, float step = 0.1f)
@@ -127,22 +155,7 @@ namespace imgui_layer
 
         std::string resolve_override_image_path(const std::string& inputPath)
         {
-            auto sanitizedInput = trim_path_input(inputPath);
-            if (sanitizedInput.empty())
-                return {};
-
-            if (is_absolute_windows_path(sanitizedInput))
-                return sanitizedInput;
-
-            auto directRelativePath = get_game_relative_path(sanitizedInput.c_str());
-            if (file_exists(directRelativePath))
-                return directRelativePath;
-
-            auto recursiveMatch = find_image_in_assets_recursive(sanitizedInput);
-            if (!recursiveMatch.empty())
-                return recursiveMatch;
-
-            return directRelativePath;
+            return imgui_layer::resolve_asset_image_path(inputPath);
         }
 
         RouletteDebugImageOverride& get_override(RouletteDebugImageSlot slot)
@@ -172,6 +185,14 @@ namespace imgui_layer
                 overrideEntry.texture->Release();
                 overrideEntry.texture = nullptr;
             }
+            for (auto& frame : overrideEntry.frames)
+            {
+                if (frame.texture)
+                    frame.texture->Release();
+            }
+            overrideEntry.frames.clear();
+            overrideEntry.frameCount = 0;
+            overrideEntry.resolvedSource.clear();
 
             if (!g_device)
             {
@@ -186,18 +207,34 @@ namespace imgui_layer
                 return false;
             }
 
-            std::ifstream stream(absolutePath, std::ios::binary);
-            if (!stream)
+            std::vector<char> fileData;
+            std::string resolvedSource;
+            if (!read_asset_image_bytes(overrideEntry.path, fileData, &resolvedSource))
             {
                 overrideEntry.status = "File not found";
                 return false;
             }
-
-            std::vector<char> fileData((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
             if (fileData.empty())
             {
                 overrideEntry.status = "File is empty";
                 return false;
+            }
+
+            auto normalizedPath = normalize_asset_browser_text(overrideEntry.path);
+            auto extension = std::filesystem::path(normalizedPath).extension().string();
+            if (extension == ".gif")
+            {
+                if (!load_gif_frames_from_memory(fileData.data(), static_cast<UINT>(fileData.size()), overrideEntry.frames))
+                {
+                    overrideEntry.status = "Unsupported GIF or decode failed";
+                    return false;
+                }
+
+                overrideEntry.texture = get_animated_texture_frame(overrideEntry.frames);
+                overrideEntry.frameCount = static_cast<uint32_t>(overrideEntry.frames.size());
+                overrideEntry.resolvedSource = resolvedSource;
+                overrideEntry.status = "Loaded GIF";
+                return overrideEntry.texture != nullptr;
             }
 
             overrideEntry.texture = create_texture_from_image_memory(g_device, fileData.data(), static_cast<UINT>(fileData.size()));
@@ -207,6 +244,7 @@ namespace imgui_layer
                 return false;
             }
 
+            overrideEntry.resolvedSource = resolvedSource;
             overrideEntry.status = "Loaded";
             return true;
         }
@@ -217,111 +255,38 @@ namespace imgui_layer
             if (overrideEntry.texture)
                 overrideEntry.texture->Release();
             overrideEntry.texture = nullptr;
+            for (auto& frame : overrideEntry.frames)
+            {
+                if (frame.texture)
+                    frame.texture->Release();
+            }
+            overrideEntry.frames.clear();
             overrideEntry.enabled = false;
             overrideEntry.loadAttempted = false;
+            overrideEntry.frameCount = 0;
+            overrideEntry.resolvedSource.clear();
             overrideEntry.status = "Cleared";
         }
 
         std::vector<std::string> collect_asset_image_candidates()
         {
-            namespace fs = std::filesystem;
-            static constexpr std::array<const char*, 7> kSupportedExt{
-                ".png", ".jpg", ".jpeg", ".bmp", ".tga", ".dds", ".gif"
-            };
-
-            std::set<std::string> unique;
-            for (const auto& assetsRoot : get_assets_search_roots())
-            {
-                std::error_code ec;
-                if (!fs::exists(assetsRoot, ec))
-                    continue;
-
-                for (fs::recursive_directory_iterator it(assetsRoot, fs::directory_options::skip_permission_denied, ec), end; it != end; it.increment(ec))
-                {
-                    if (ec)
-                        continue;
-                    if (!it->is_regular_file(ec) || ec)
-                        continue;
-
-                    auto ext = normalize_path_for_compare(it->path().extension().string());
-                    if (std::find_if(kSupportedExt.begin(), kSupportedExt.end(), [&](const char* e) { return ext == e; }) == kSupportedExt.end())
-                        continue;
-
-                    std::error_code relEc;
-                    auto relative = fs::relative(it->path(), assetsRoot, relEc);
-                    if (relEc)
-                        continue;
-
-                    auto candidate = std::string("assets\\") + relative.string();
-                    std::replace(candidate.begin(), candidate.end(), '/', '\\');
-                    unique.insert(candidate);
-                }
-            }
-
-            return std::vector<std::string>(unique.begin(), unique.end());
+            return imgui_layer::collect_asset_image_candidates(false);
         }
 
         bool matches_candidate_filter(const std::string& candidate, const std::string& query)
         {
-            if (query.empty())
-                return true;
-
-            namespace fs = std::filesystem;
-            auto normalizedCandidate = normalize_path_for_compare(candidate);
-            auto normalizedQuery = normalize_path_for_compare(query);
-            auto fileName = normalize_path_for_compare(fs::path(candidate).filename().string());
-
-            auto hasPathHint = normalizedQuery.find('\\') != std::string::npos;
-            if (hasPathHint)
-                return normalizedCandidate.find(normalizedQuery) != std::string::npos;
-
-            if (fileName.rfind(normalizedQuery, 0) == 0)
-                return true;
-
-            return normalizedCandidate.find(normalizedQuery) != std::string::npos;
+            return imgui_layer::asset_image_candidate_matches_filter(candidate, query);
         }
 
-        void draw_asset_image_selector(RouletteDebugImageSlot slot, char* pathBuffer, std::size_t pathBufferSize)
+        void draw_asset_image_selector(RouletteDebugImageSlot slot, char* pathBuffer, std::size_t pathBufferSize, char* filterBuffer, std::size_t filterBufferSize)
         {
-            static std::vector<std::string> s_candidates;
-            static bool s_loaded = false;
-
-            if (!s_loaded)
+            auto browserId = std::string("roulette_asset_browser_") + std::to_string(static_cast<int>(slot));
+            if (imgui_layer::draw_asset_image_browser(browserId.c_str(), pathBuffer, pathBufferSize, filterBuffer, filterBufferSize, 140.0f))
             {
-                s_candidates = collect_asset_image_candidates();
-                s_loaded = true;
-            }
-
-            if (ImGui::SmallButton((std::string("Refresh List##roulette_img_refresh_") + std::to_string(static_cast<int>(slot))).c_str()))
-                s_candidates = collect_asset_image_candidates();
-
-            if (s_candidates.empty())
-            {
-                ImGui::TextDisabled("No images found under assets folders.");
-                return;
-            }
-
-            auto query = trim_path_input(pathBuffer ? std::string(pathBuffer) : std::string{});
-            const char* preview = query.empty() ? "Select image..." : pathBuffer;
-
-            ImGui::SetNextItemWidth(-1.0f);
-            if (ImGui::BeginCombo((std::string("Asset image##roulette_img_combo_") + std::to_string(static_cast<int>(slot))).c_str(), preview))
-            {
-                for (const auto& candidate : s_candidates)
-                {
-                    if (!matches_candidate_filter(candidate, query))
-                        continue;
-
-                    if (ImGui::Selectable(candidate.c_str()))
-                    {
-                        std::snprintf(pathBuffer, pathBufferSize, "%s", candidate.c_str());
-                        auto& overrideEntry = get_override(slot);
-                        overrideEntry.path = pathBuffer;
-                        load_roulette_debug_override_image(slot);
-                        overrideEntry.enabled = true;
-                    }
-                }
-                ImGui::EndCombo();
+                auto& overrideEntry = get_override(slot);
+                overrideEntry.path = pathBuffer;
+                load_roulette_debug_override_image(slot);
+                overrideEntry.enabled = true;
             }
         }
 
@@ -330,10 +295,11 @@ namespace imgui_layer
             if (!ImGui::CollapsingHeader("Debug Images"))
                 return;
 
-            ImGui::TextDisabled("Path relativo, sotto-path o nome file (es: bg.png). Cerca anche in data\\assets\\**");
+            ImGui::TextDisabled("Path relativo, sotto-path o nome file. Ogni slot ha un browser ricorsivo degli `Assets` del client.");
             ImGui::TextDisabled("Nota: Dragon non e' usato nel rendering roulette attuale.");
 
             static std::array<std::array<char, MAX_PATH>, static_cast<std::size_t>(RouletteDebugImageSlot::Count)> s_pathBuffers{};
+            static std::array<std::array<char, 96>, static_cast<std::size_t>(RouletteDebugImageSlot::Count)> s_filterBuffers{};
             static bool s_buffersInitialized = false;
             if (!s_buffersInitialized)
             {
@@ -355,7 +321,11 @@ namespace imgui_layer
                 ImGui::SetNextItemWidth(-1.0f);
                 ImGui::InputText((std::string("Path##roulette_img_path_") + std::to_string(i)).c_str(), s_pathBuffers[i].data(), s_pathBuffers[i].size());
 
-                draw_asset_image_selector(slot, s_pathBuffers[i].data(), s_pathBuffers[i].size());
+                if (ImGui::TreeNode((std::string("Asset Browser##roulette_img_browser_") + std::to_string(i)).c_str()))
+                {
+                    draw_asset_image_selector(slot, s_pathBuffers[i].data(), s_pathBuffers[i].size(), s_filterBuffers[i].data(), s_filterBuffers[i].size());
+                    ImGui::TreePop();
+                }
 
                 if (ImGui::Button((std::string("Load##roulette_img_load_") + std::to_string(i)).c_str()))
                 {
@@ -370,10 +340,22 @@ namespace imgui_layer
                 }
                 ImGui::SameLine();
                 if (ImGui::Button((std::string("Clear##roulette_img_clear_") + std::to_string(i)).c_str()))
+                {
                     clear_roulette_debug_override_image(slot);
+                    s_pathBuffers[i][0] = '\0';
+                }
 
                 if (!overrideEntry.status.empty())
                     ImGui::TextDisabled("Status: %s", overrideEntry.status.c_str());
+                if (overrideEntry.frameCount > 0)
+                    ImGui::TextDisabled("Animated GIF: %u frames", overrideEntry.frameCount);
+                if (!overrideEntry.resolvedSource.empty())
+                    ImGui::TextDisabled("Source: %s", overrideEntry.resolvedSource.c_str());
+
+                auto previewTexture = overrideEntry.frames.empty()
+                    ? overrideEntry.texture
+                    : get_animated_texture_frame(overrideEntry.frames);
+                draw_override_preview((std::string("slot_") + std::to_string(i)).c_str(), previewTexture);
             }
         }
     }
@@ -384,8 +366,11 @@ namespace imgui_layer
         if (!overrideEntry.enabled)
             return nullptr;
 
-        if (!overrideEntry.texture && !overrideEntry.loadAttempted && !overrideEntry.path.empty())
+        if (!overrideEntry.texture && overrideEntry.frames.empty() && !overrideEntry.loadAttempted && !overrideEntry.path.empty())
             load_roulette_debug_override_image(slot);
+
+        if (!overrideEntry.frames.empty())
+            return get_animated_texture_frame(overrideEntry.frames);
 
         return overrideEntry.texture;
     }

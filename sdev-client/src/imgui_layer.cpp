@@ -46,6 +46,42 @@ Chat type notes
 
 namespace imgui_layer
 {
+    namespace
+    {
+        bool is_keyboard_message(UINT msg)
+        {
+            switch (msg)
+            {
+            case WM_KEYDOWN:
+            case WM_KEYUP:
+            case WM_SYSKEYDOWN:
+            case WM_SYSKEYUP:
+            case WM_CHAR:
+            case WM_SYSCHAR:
+            case WM_DEADCHAR:
+            case WM_SYSDEADCHAR:
+            case WM_UNICHAR:
+                return true;
+            default:
+                return false;
+            }
+        }
+
+        bool should_capture_gm_keyboard()
+        {
+            return custom_gm_panel::is_open()
+                || debug_panel::is_open()
+                || g_showRouletteLayoutDebugPanel
+                || g_showBattlegroundLayoutDebugPanel
+                || g_showCharacterLayoutDebugPanel;
+        }
+
+        bool should_capture_gm_input()
+        {
+            return g_captureGmInput && should_capture_gm_keyboard();
+        }
+    }
+
     HRESULT __stdcall hooked_mouse_get_device_state(IDirectInputDevice8A* device, DWORD cbData, LPVOID lpvData)
     {
         auto* original = g_originalMouseGetDeviceState;
@@ -66,13 +102,33 @@ namespace imgui_layer
         if (g_imguiInitialized && ImGui::GetCurrentContext())
         {
             auto& io = ImGui::GetIO();
-            if (io.WantCaptureMouse && cbData >= sizeof(DIMOUSESTATE2))
+            if (should_capture_gm_input() && io.WantCaptureMouse && cbData >= sizeof(DIMOUSESTATE2))
             {
                 auto* ms = static_cast<DIMOUSESTATE2*>(lpvData);
                 ms->rgbButtons[0] = 0;   // left button
                 ms->rgbButtons[1] = 0;   // right button
             }
         }
+
+        return hr;
+    }
+
+    HRESULT __stdcall hooked_keyboard_get_device_state(IDirectInputDevice8A* device, DWORD cbData, LPVOID lpvData)
+    {
+        auto* original = g_originalKeyboardGetDeviceState;
+        if (g_var && g_var->input.keyboard2
+            && g_var->input.keyboard2->device == device
+            && g_originalKeyboard2GetDeviceState)
+        {
+            original = g_originalKeyboard2GetDeviceState;
+        }
+
+        auto hr = original ? original(device, cbData, lpvData) : E_FAIL;
+        if (FAILED(hr) || !lpvData)
+            return hr;
+
+        if (g_imguiInitialized && ImGui::GetCurrentContext() && should_capture_gm_input())
+            std::memset(lpvData, 0, cbData);
 
         return hr;
     }
@@ -99,6 +155,28 @@ namespace imgui_layer
             g_originalMouse2GetDeviceState = g_originalMouseGetDeviceState;
 
         g_mouseDeviceHooked = (g_originalMouseGetDeviceState != nullptr);
+    }
+
+    void install_dinput_keyboard_hook()
+    {
+        if (g_keyboardDeviceHooked || !g_var)
+            return;
+
+        auto hookDevice = [](shaiya::Keyboard* k, GetDeviceStateFn* outOriginal) {
+            if (!k || !k->device)
+                return;
+            void* orig = nullptr;
+            if (hook_vtable(k->device, 9, reinterpret_cast<void*>(hooked_keyboard_get_device_state), &orig) && orig)
+                *outOriginal = reinterpret_cast<GetDeviceStateFn>(orig);
+        };
+
+        hookDevice(g_var->input.keyboard, &g_originalKeyboardGetDeviceState);
+        hookDevice(g_var->input.keyboard2, &g_originalKeyboard2GetDeviceState);
+
+        if (g_originalKeyboard2GetDeviceState == reinterpret_cast<GetDeviceStateFn>(hooked_keyboard_get_device_state))
+            g_originalKeyboard2GetDeviceState = g_originalKeyboardGetDeviceState;
+
+        g_keyboardDeviceHooked = (g_originalKeyboardGetDeviceState != nullptr);
     }
 
     // -----------------------------------------------------------------------
@@ -378,7 +456,7 @@ namespace imgui_layer
             {
                 float mx = static_cast<float>(GET_X_LPARAM(scaledLParam));
                 float my = static_cast<float>(GET_Y_LPARAM(scaledLParam));
-                if (is_point_over_any_imgui_window(mx, my))
+                if (should_capture_gm_input() && is_point_over_any_imgui_window(mx, my))
                 {
                     result = TRUE;
                     return true;
@@ -418,6 +496,13 @@ namespace imgui_layer
 
         // Non-mouse messages (keyboard, etc.) -- always forward to ImGui.
         ImGui_ImplWin32_WndProcHandler(hwnd, msg, wParam, lParam);
+
+        if (is_keyboard_message(msg) && should_capture_gm_input())
+        {
+            result = TRUE;
+            return true;
+        }
+
         return false;
     }
 
@@ -511,6 +596,7 @@ namespace imgui_layer
         // Hook DirectInput mouse polling so clicks are suppressed at the
         // earliest point in the game loop when ImGui owns the cursor.
         install_dinput_mouse_hook();
+        install_dinput_keyboard_hook();
     }
 
     void shutdown_game_imgui()
@@ -656,6 +742,7 @@ namespace imgui_layer
         custom_chat::render_ingame_chat();
         draw_roulette_layout_debug_panel();
         draw_battleground_layout_debug_panel();
+        draw_character_layout_debug_panel();
 
         if (g_showPanel)
             draw_panel_shell();

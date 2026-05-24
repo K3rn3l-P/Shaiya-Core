@@ -98,6 +98,7 @@ namespace imgui_layer
     constexpr const char* kParallelChatActiveKey = "PARALLEL_CHAT_ACTIVE";
     constexpr const char* kHideNativeChatKey = "HIDE_NATIVE_CHAT";
     constexpr const char* kIdViewEnabledKey = "ID_VIEW_ENABLED";
+    constexpr const char* kCaptureGmInputKey = "CAPTURE_GM_INPUT";
     constexpr DWORD kEmojiSceneGraceMs = 4000;
     constexpr DWORD kEmojiMapChangeGraceMs = 12000;
     constexpr DWORD kMapTransitionGraceMs = 12000;
@@ -136,6 +137,11 @@ namespace imgui_layer
     inline GetDeviceStateFn g_originalMouseGetDeviceState = nullptr;
     inline GetDeviceStateFn g_originalMouse2GetDeviceState = nullptr;
     inline bool g_mouseDeviceHooked = false;
+
+    // DirectInput keyboard hook state
+    inline GetDeviceStateFn g_originalKeyboardGetDeviceState = nullptr;
+    inline GetDeviceStateFn g_originalKeyboard2GetDeviceState = nullptr;
+    inline bool g_keyboardDeviceHooked = false;
 
     // Hit-test rects for every overlay element
     // Main map anchor — object pointer captured once from init; pos/size read live each frame.
@@ -196,6 +202,7 @@ namespace imgui_layer
     inline bool   g_parallelChatActive = false;
     inline bool   g_parallelAutoScroll = true;
     inline bool   g_hideNativeChatVisuals = false;
+    inline bool   g_captureGmInput = true;
 
     // Parallel chat font — hardcoded to Tahoma 14px with shadow
     inline ImFont* g_parallelFont = nullptr;
@@ -408,6 +415,37 @@ namespace imgui_layer
     inline BattlegroundLayoutDebugState g_battlegroundLayoutDebug{};
     inline bool g_showBattlegroundLayoutDebugPanel = false;
 
+    struct CharacterLayoutDebugState
+    {
+        bool drawGuides = false;
+        bool drawAnchorCross = true;
+        bool drawTitleGuide = true;
+        bool drawNameGuide = true;
+        bool drawHpBar = true;
+        bool drawHpText = true;
+        ImVec2 titleCenterOffset = ImVec2(0.0f, -54.0f);
+        ImVec2 titleBoxSize = ImVec2(180.0f, 48.0f);
+        ImVec2 nameCenterOffset = ImVec2(0.0f, -16.0f);
+        ImVec2 nameBoxSize = ImVec2(150.0f, 18.0f);
+        ImVec2 hpBarOffset = ImVec2(-50.0f, -30.0f);
+        ImVec2 hpBarSize = ImVec2(100.0f, 8.0f);
+        float hpTextOffsetY = -18.0f;
+    };
+
+    inline CharacterLayoutDebugState g_characterLayoutDebug{};
+    inline bool g_showCharacterLayoutDebugPanel = false;
+    inline bool g_characterLayoutAnchorValid = false;
+    inline ImVec2 g_characterLayoutAnchorScreen = ImVec2(0.0f, 0.0f);
+    inline float g_characterLayoutAnchorDepth = 0.0f;
+    inline uint32_t g_characterLayoutAnchorUserId = 0;
+    inline DWORD g_characterLayoutAnchorTick = 0;
+
+    struct AnimatedVisualFrame
+    {
+        LPDIRECT3DTEXTURE9 texture;
+        DWORD delayMs;
+    };
+
     enum class RouletteDebugImageSlot : uint8_t
     {
         Background = 0,
@@ -421,8 +459,11 @@ namespace imgui_layer
     {
         std::string path;
         LPDIRECT3DTEXTURE9 texture = nullptr;
+        std::vector<AnimatedVisualFrame> frames;
         bool enabled = false;
         bool loadAttempted = false;
+        uint32_t frameCount = 0;
+        std::string resolvedSource;
         std::string status;
     };
 
@@ -442,6 +483,20 @@ namespace imgui_layer
 
     inline std::array<RouletteDebugImageOverride, static_cast<std::size_t>(BattlegroundDebugImageSlot::Count)> g_battlegroundDebugImageOverrides;
 
+    enum class CharacterDebugImageSlot : uint8_t
+    {
+        TitleBackground = 0,
+        TitleFrame,
+        NameBackground,
+        NameFrame,
+        HpBarBackground,
+        HpBarFill,
+        HpBarBorder,
+        Count
+    };
+
+    inline std::array<RouletteDebugImageOverride, static_cast<std::size_t>(CharacterDebugImageSlot::Count)> g_characterDebugImageOverrides;
+
     // -----------------------------------------------------------------------
     //  Shared types
     // -----------------------------------------------------------------------
@@ -449,12 +504,6 @@ namespace imgui_layer
     {
         Emoji,
         Gif
-    };
-
-    struct AnimatedVisualFrame
-    {
-        LPDIRECT3DTEXTURE9 texture;
-        DWORD delayMs;
     };
 
     struct EmojiEntry
@@ -635,6 +684,11 @@ namespace imgui_layer
     void request_roulette_list();
     void request_roulette_spin();
 
+    // imgui_layer_character_visual_debug.cpp
+    void capture_character_layout_anchor(CCharacter* user, float x, float y, float extrusion);
+    void draw_character_layout_debug_panel();
+    std::string build_character_layout_dump();
+
     // imgui_layer_reward.cpp
     void draw_reward_bar();
     void draw_reward_button_overlay();
@@ -646,6 +700,9 @@ namespace imgui_layer
     void release_emoji_textures();
     EmojiEntry* find_emoji_by_token(const char* text);
     LPDIRECT3DTEXTURE9 get_emoji_texture(EmojiEntry& emoji);
+    bool ensure_gdiplus_started();
+    DWORD read_gif_frame_delay_ms(Gdiplus::Bitmap& bitmap, UINT frameIndex);
+    LPDIRECT3DTEXTURE9 create_texture_from_argb_bitmap(Gdiplus::Bitmap& bitmap);
     float get_chat_text_width();
     float measure_chat_prefix_width(const std::string& prefix);
     void draw_floating_emoji_overlays();
@@ -654,6 +711,14 @@ namespace imgui_layer
     void install_chat_emoji_hook();
     const std::string& get_game_base_dir();
     std::string get_game_relative_path(const char* relative);
+    std::string normalize_asset_browser_text(std::string value);
+    std::vector<std::string> collect_asset_image_candidates(bool forceRefresh = false);
+    bool asset_image_candidate_matches_filter(const std::string& candidate, const std::string& query);
+    std::string resolve_asset_image_path(const std::string& inputPath);
+    bool read_asset_image_bytes(const std::string& inputPath, std::vector<char>& outData, std::string* resolvedPath = nullptr);
+    bool load_gif_frames_from_memory(const void* data, UINT dataSize, std::vector<AnimatedVisualFrame>& outFrames);
+    LPDIRECT3DTEXTURE9 get_animated_texture_frame(const std::vector<AnimatedVisualFrame>& frames);
+    bool draw_asset_image_browser(const char* browserId, char* pathBuffer, std::size_t pathBufferSize, char* filterBuffer, std::size_t filterBufferSize, float height = 150.0f);
     LPDIRECT3DTEXTURE9 load_saf_texture(LPDIRECT3DTEXTURE9& texture, bool& loadAttempted, bool found, uint64_t offset, uint64_t size);
     LPDIRECT3DTEXTURE9 load_roulette_bg_texture();
     LPDIRECT3DTEXTURE9 load_roulette_dragon_texture();

@@ -257,14 +257,8 @@
     <ClInclude Include="src\include\imgui_layer_internal.h">
       <Filter>include</Filter>
     </ClInclude>
-    <ClInclude Include="src\include\custom_gm_panel.h">
-      <Filter>include</Filter>
-    </ClInclude>
     <ClInclude Include="include\shaiya\Roulette.h">
       <Filter>include\shaiya</Filter>
-    </ClInclude>
-    <ClInclude Include="src\include\custom_chat.h">
-      <Filter>include</Filter>
     </ClInclude>
     <ClInclude Include="src\include\speed_monitor.h">
       <Filter>include</Filter>
@@ -276,9 +270,6 @@
       <Filter>include</Filter>
     </ClInclude>
     <ClInclude Include="include\shaiya\ProductInfo.h">
-      <Filter>include</Filter>
-    </ClInclude>
-    <ClInclude Include="src\include\GmCommandNative.h">
       <Filter>include</Filter>
     </ClInclude>
   </ItemGroup>
@@ -508,7 +499,10 @@
     <ClCompile Include="src\speed_monitor.cpp">
       <Filter>src</Filter>
     </ClCompile>
-    <ClCompile Include="src\gm_commands_native.cpp">
+    <ClCompile Include="src\imgui_layer_character_visual_debug.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\imgui_layer_asset_browser.cpp">
       <Filter>src</Filter>
     </ClCompile>
   </ItemGroup>

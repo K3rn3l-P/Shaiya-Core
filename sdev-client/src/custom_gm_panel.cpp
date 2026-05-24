@@ -1072,7 +1072,7 @@ namespace custom_gm_panel
     {
         toggle_if_f7(g_f7Down);
 
-        if (!is_admin())
+        if (!g_showCustomPanel || !is_admin())
             return;
 
         update_panel_entry_capture();
@@ -1121,5 +1121,10 @@ namespace custom_gm_panel
                 ImGui::End();
             }
         }
+    }
+
+    bool is_open()
+    {
+        return g_showCustomPanel && is_admin();
     }
 }

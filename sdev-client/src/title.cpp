@@ -24,6 +24,7 @@ using std::min;
 #include "include/shaiya/ItemInfo.h"
 #include "include/shaiya/HexColor.h"
 #include "include/shaiya/Static.h"
+#include "include/imgui_layer_internal.h"
 using namespace shaiya;
 #pragma comment(lib, "gdiplus.lib")
 
@@ -654,6 +655,8 @@ namespace title
 
     void hook(CCharacter* user, float x, float y, float extrusion)
     {
+        imgui_layer::capture_character_layout_anchor(user, x, y, extrusion);
+
         if (!g_showTitles)
         {
             reset(user);

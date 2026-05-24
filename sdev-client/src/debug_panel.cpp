@@ -32,6 +32,9 @@ namespace debug_panel
             imgui_layer::g_idViewEnabled = imgui_layer::read_imgui_bool(
                 imgui_layer::kIdViewEnabledKey,
                 true);
+            imgui_layer::g_captureGmInput = imgui_layer::read_imgui_bool(
+                imgui_layer::kCaptureGmInputKey,
+                true);
         }
 
         void toggle_if_f9()
@@ -69,6 +72,12 @@ namespace debug_panel
         ImGui::SameLine();
         ImGui::TextDisabled("(mob/NPC IDs)");
 
+        if (ImGui::Checkbox("Capture GM Input (KB+Mouse)", &imgui_layer::g_captureGmInput))
+            imgui_layer::write_imgui_bool(
+                imgui_layer::kCaptureGmInputKey,
+                imgui_layer::g_captureGmInput);
+        ImGui::TextDisabled("When enabled, game hotkeys/clicks are blocked while GM/debug panels are open.");
+
         ImGui::Separator();
         if (ImGui::CollapsingHeader("Speed Monitor", ImGuiTreeNodeFlags_DefaultOpen))
             speed_monitor::render_options();
@@ -81,7 +90,13 @@ namespace debug_panel
         ImGui::Checkbox("Roulette Layout Debug", &imgui_layer::g_showRouletteLayoutDebugPanel);
         ImGui::SameLine();
         ImGui::Checkbox("Battleground Layout Debug", &imgui_layer::g_showBattlegroundLayoutDebugPanel);
+        ImGui::Checkbox("Character Visual Debug", &imgui_layer::g_showCharacterLayoutDebugPanel);
 
         ImGui::End();
+    }
+
+    bool is_open()
+    {
+        return g_showDebugPanel && is_admin();
     }
 }

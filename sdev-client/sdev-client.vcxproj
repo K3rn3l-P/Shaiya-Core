@@ -137,7 +137,9 @@
     <ClCompile Include="src\dllmain.cpp" />
     <ClCompile Include="src\equipment.cpp" />
     <ClCompile Include="src\ep4_ui.cpp" />
+    <ClCompile Include="src\imgui_layer_asset_browser.cpp" />
     <ClCompile Include="src\imgui_layer_battleground_layout_debug.cpp" />
+    <ClCompile Include="src\imgui_layer_character_visual_debug.cpp" />
     <ClCompile Include="src\imgui_layer_roulette_layout_debug.cpp" />
     <ClCompile Include="src\stat_color.cpp" />
     <ClCompile Include="src\ep6_repo_features.cpp" />
