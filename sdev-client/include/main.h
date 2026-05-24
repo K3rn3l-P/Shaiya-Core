@@ -88,3 +88,6 @@ inline int g_showNameColors = true;
 inline float g_cameraLimit = 30.0f;
 inline shaiya::Unknown* g_uiRoot1 = nullptr;
 inline shaiya::Unknown* g_uiRoot2 = nullptr;
+
+int dispatch_native_gm_command(void* chatWindow, char* text);
+bool is_native_gm_command_catalogued(const char* text);

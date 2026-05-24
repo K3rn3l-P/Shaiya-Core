@@ -9,6 +9,7 @@
 #include <vector>
 #include <external/imgui/imgui.h>
 #include "include/main.h"
+#include "include/GmCommandNative.h"
 #include "include/shaiya/CDataFile.h"
 #include "include/shaiya/CPlayerData.h"
 #include "include/shaiya/ItemInfo.h"
@@ -314,103 +315,27 @@ namespace custom_gm_panel
     // -----------------------------------------------------------------------
     // GM Commands
     // -----------------------------------------------------------------------
-    struct GmCommandEntry
-    {
-        const char* category;
-        const char* templateText;
-        const char* insertText;
-        const char* description;
-    };
-
-    static constexpr auto kGmCommands = std::to_array<GmCommandEntry>({
-        { "Character", "/char on", "/char on", "Enable character mode/visibility state." },
-        { "Character", "/char off", "/char off", "Disable character mode/visibility state." },
-        { "Character", "/attack on", "/attack on", "Enable attack mode." },
-        { "Character", "/attack off", "/attack off", "Disable attack mode." },
-
-        { "Movement", "/cmove <MapID>", "/cmove", "Move yourself to a map id." },
-        { "Movement", "/amove <UserName>", "/amove", "Move to target player." },
-        { "Movement", "/bmove <X> <Y> <MapID>", "/bmove", "Move to explicit coordinates/map." },
-
-        { "Summon", "/asummon <UserName>", "/asummon", "Summon one player to you." },
-        { "Summon", "/bsummon <UserName> <X> <Z> <MapID>", "/bsummon", "Summon player to specific map coordinates." },
-        { "Summon", "/xcall <Faction#>", "/xcall", "Summon an entire faction (1 Light, 2 Fury)." },
-
-        { "Items", "/getitem <ItemType> <ItemTypeID> <ItemCount>", "/getitem", "Create item by type/typeId/count." },
-        { "Items", "/getitem <type> <typeid>", "/getitem", "Short item create form." },
-        { "Items", "/imake \"Item Name Here\"", "/imake", "Create item by item name text." },
-
-        { "NPC", "/nmake <TypeID>", "/nmake", "Spawn NPC by type id." },
-        { "NPC", "/nera <TypeID>", "/nera", "Delete NPC by type id." },
-
-        { "MOB", "/mmake <MobID>", "/mmake", "Spawn mob by id." },
-        { "MOB", "/mera <TypeID>", "/mera", "Delete mobs in range / by type id." },
-        { "MOB", "/mera t", "/mera t", "Delete currently targeted mob." },
-
-        { "Notices", "/notice \"Message Here\"", "/notice", "Global server notice." },
-        { "Notices", "/bnotice \"Message Here\"", "/bnotice", "Broadcast notice." },
-        { "Notices", "/znotice \"Message Here\"", "/znotice", "Notice on current map only." },
-        { "Notices", "/wnotice <UserName> \"Message Here\"", "/wnotice", "Notice-style whisper to one user." },
-        { "Notices", "/cnotice \"Message Here\"", "/cnotice", "Faction-only notice." },
-        { "Notices", "/gmnotice \"Message Here\"", "/gmnotice", "GM-only notice." },
-        { "Notices", "/warning <UserName> \"Message Here\"", "/warning", "Warning message to one user." },
-
-        { "Moderation", "/kick <UserName>", "/kick", "Kick player offline." },
-        { "Moderation", "/stopon <UserName>", "/stopon", "Apply movement restriction." },
-        { "Moderation", "/stopoff <UserName>", "/stopoff", "Remove movement restriction." },
-        { "Moderation", "/silence on <UserName>", "/silence on", "Enable chat silence on player." },
-        { "Moderation", "/silence off <UserName>", "/silence off", "Disable chat silence on player." },
-        { "Moderation", "/watch <UserName>", "/watch", "Locate or track a player." },
-
-        { "Inventory/Admin", "/eclear <UserName>", "/eclear", "Clear equipped items of user." },
-        { "Inventory/Admin", "/iclear <UserName>", "/iclear", "Clear inventory of user." },
-        { "Inventory/Admin", "/cure <UserName>", "/cure", "Cure target user or self." },
-        { "Inventory/Admin", "/set <UserName> <skillpoint|money|kill|str|dex|luc|wis|int|rec> <Amount>", "/set", "Set selected user stat/value." },
-        { "Inventory/Admin", "/apowercan <UserName>", "/apowercan", "Remove GM powers for user." },
-        { "Inventory/Admin", "/auctionsearch <UserName>", "/auctionsearch", "Inspect player auction listings." },
-        { "Inventory/Admin", "/auctionrecall <UserName>", "/auctionrecall", "Recall player market items." },
-
-        { "Camera", "/camlimit on", "/camlimit on", "Enable camera limit mode." },
-        { "Camera", "/camlimit off", "/camlimit off", "Disable camera limit mode." },
-
-        { "Untested", "/addpoints [CharName] [count]", "/addpoints", "Untested: add points." },
-        { "Untested", "/addapall [x]", "/addapall", "Untested: add AP all." },
-        { "Untested", "/getpoints", "/getpoints", "Untested: query points." },
-        { "Untested", "/promote [GM CharName]", "/promote", "Untested: promote GM." },
-        { "Untested", "/demote [GM CharName]", "/demote", "Untested: demote GM." },
-        { "Untested", "/tempban [CharName] [count] [m/h/d]", "/tempban", "Untested: temporary ban." },
-        { "Untested", "/ban [CharName]", "/ban", "Untested: ban." },
-        { "Untested", "/fullban [CharName]", "/fullban", "Untested: full ban." },
-        { "Untested", "/unban [CharName]", "/unban", "Untested: unban." },
-        { "Untested", "/makegsl [CharName]", "/makegsl", "Untested: grant GSL." },
-        { "Untested", "/removegsl [CharName]", "/removegsl", "Untested: remove GSL." },
-        { "Untested", "/makegs [CharName]", "/makegs", "Untested: grant GS." },
-        { "Untested", "/removegs [CharName]", "/removegs", "Untested: remove GS." },
-        { "Untested", "/makegm [CharName]", "/makegm", "Untested: grant GM." },
-        { "Untested", "/removegm [CharName]", "/removegm", "Untested: remove GM." },
-        { "Untested", "/makea [CharName]", "/makea", "Untested: grant admin." },
-        { "Untested", "/removea [CharName]", "/removea", "Untested: remove admin." },
-        { "Untested", "/reschar [CharName]", "/reschar", "Untested: restore character." },
-        { "Untested", "/delchar [CharName]", "/delchar", "Untested: delete character." },
-        { "Untested", "/disableacc [CharName]", "/disableacc", "Untested: disable account." },
-        { "Untested", "/enableacc [CharName]", "/enableacc", "Untested: enable account." }
-    });
-
-    static constexpr auto kGmCommandCategories = std::to_array<const char*>({
-        "Character",
-        "Movement",
-        "Summon",
-        "Items",
-        "NPC",
-        "MOB",
-        "Notices",
-        "Moderation",
-        "Inventory/Admin",
-        "Camera",
-        "Untested"
-    });
-
     static std::array<char, 128> g_gmCommandSearch{};
+
+    static const char* category_to_label(shaiya::gm::Category category)
+    {
+        switch (category)
+        {
+        case shaiya::gm::Category::Mode: return "Mode";
+        case shaiya::gm::Category::Movement: return "Movement";
+        case shaiya::gm::Category::Moderation: return "Moderation";
+        case shaiya::gm::Category::Notice: return "Notice";
+        case shaiya::gm::Category::SpawnItem: return "SpawnItem";
+        case shaiya::gm::Category::Guild: return "Guild";
+        case shaiya::gm::Category::QuestEvent: return "QuestEvent";
+        case shaiya::gm::Category::Server: return "Server";
+        case shaiya::gm::Category::WorldDebug: return "WorldDebug";
+        case shaiya::gm::Category::Auction: return "Auction";
+        case shaiya::gm::Category::AdminPower: return "AdminPower";
+        case shaiya::gm::Category::ExtendsCommand: return "ExtendsCommand";
+        default: return "Other";
+        }
+    }
 
     static void post_gm_command_to_chat(const char* command)
     {
@@ -421,58 +346,120 @@ namespace custom_gm_panel
         SendMessageA(g_var->hwnd, kClientGMCommandWindowMessage, 0, reinterpret_cast<LPARAM>(command));
     }
 
-    static bool command_matches_search(const GmCommandEntry& entry, const std::string& lowerSearch)
+    static bool native_command_matches_search(const shaiya::gm::CommandEntry& entry, const std::string& lowerSearch)
     {
         if (lowerSearch.empty())
             return true;
 
-        auto lowerTemplate = to_lower_ascii(entry.templateText);
-        auto lowerCategory = to_lower_ascii(entry.category);
-        auto lowerDescription = to_lower_ascii(entry.description);
-        return lowerTemplate.find(lowerSearch) != std::string::npos
+        auto lowerPrefix = to_lower_ascii(entry.prefix ? entry.prefix : "");
+        auto lowerCategory = to_lower_ascii(category_to_label(entry.category));
+        auto lowerSummary = to_lower_ascii(entry.summary ? entry.summary : "");
+        return lowerPrefix.find(lowerSearch) != std::string::npos
             || lowerCategory.find(lowerSearch) != std::string::npos
-            || lowerDescription.find(lowerSearch) != std::string::npos;
+            || lowerSummary.find(lowerSearch) != std::string::npos;
+    }
+
+    static bool extends_command_matches_search(const shaiya::gm::extendsCommands::Entry& entry, const std::string& lowerSearch)
+    {
+        if (lowerSearch.empty())
+            return true;
+
+        auto lowerCommand = to_lower_ascii(entry.command ? entry.command : "");
+        auto lowerSummary = to_lower_ascii(entry.summary ? entry.summary : "");
+        return lowerCommand.find(lowerSearch) != std::string::npos
+            || lowerSummary.find(lowerSearch) != std::string::npos;
     }
 
     static void draw_gm_commands()
     {
         ImGui::InputTextWithHint("##gm_cmd_search", "Search command...", g_gmCommandSearch.data(), g_gmCommandSearch.size());
         auto search = to_lower_ascii(g_gmCommandSearch.data());
-        ImGui::TextDisabled("Click a command to insert it into the chat input.");
+        ImGui::TextDisabled("Click a command to replace text in chat input.");
 
-        for (const auto* category : kGmCommandCategories)
+        constexpr auto categories = std::to_array({
+            shaiya::gm::Category::Mode,
+            shaiya::gm::Category::Movement,
+            shaiya::gm::Category::Moderation,
+            shaiya::gm::Category::Notice,
+            shaiya::gm::Category::SpawnItem,
+            shaiya::gm::Category::Guild,
+            shaiya::gm::Category::QuestEvent,
+            shaiya::gm::Category::Server,
+            shaiya::gm::Category::WorldDebug,
+            shaiya::gm::Category::Auction,
+            shaiya::gm::Category::AdminPower,
+            shaiya::gm::Category::ExtendsCommand,
+            shaiya::gm::Category::Other,
+        });
+
+        for (auto category : categories)
         {
             bool hasVisible = false;
-            for (const auto& entry : kGmCommands)
+
+            for (std::size_t i = 0; i < shaiya::gm::kNativeCatalogCount; ++i)
             {
-                if (std::strcmp(entry.category, category) == 0 && command_matches_search(entry, search))
+                const auto& entry = shaiya::gm::kNativeCatalog[i];
+                if (entry.category == category && native_command_matches_search(entry, search))
                 {
                     hasVisible = true;
                     break;
                 }
             }
 
+            if (!hasVisible && category == shaiya::gm::Category::ExtendsCommand)
+            {
+                for (std::size_t i = 0; i < shaiya::gm::extendsCommands::kExtendsCommandCount; ++i)
+                {
+                    const auto& entry = shaiya::gm::extendsCommands::kExtendsCommands[i];
+                    if (extends_command_matches_search(entry, search))
+                    {
+                        hasVisible = true;
+                        break;
+                    }
+                }
+            }
+
             if (!hasVisible)
                 continue;
 
-            if (!ImGui::TreeNode(category))
+            if (!ImGui::TreeNode(category_to_label(category)))
                 continue;
 
-            for (std::size_t i = 0; i < kGmCommands.size(); ++i)
+            for (std::size_t i = 0; i < shaiya::gm::kNativeCatalogCount; ++i)
             {
-                const auto& entry = kGmCommands[i];
-                if (std::strcmp(entry.category, category) != 0)
+                const auto& entry = shaiya::gm::kNativeCatalog[i];
+                if (entry.category != category || !native_command_matches_search(entry, search))
                     continue;
 
-                if (!command_matches_search(entry, search))
-                    continue;
-
-                auto label = std::string(entry.templateText) + "##gm_cmd_" + std::to_string(i);
+                auto label = std::string(entry.prefix) + "##gm_native_" + std::to_string(i);
                 if (ImGui::Selectable(label.c_str()))
-                    post_gm_command_to_chat(entry.insertText);
+                    post_gm_command_to_chat(entry.prefix);
 
                 if (ImGui::IsItemHovered())
-                    ImGui::SetTooltip("%s\nInsert: %s", entry.description, entry.insertText);
+                {
+                    ImGui::SetTooltip(
+                        "%s\nRequired level: %u\nAction: 0x%02X",
+                        entry.summary ? entry.summary : "",
+                        static_cast<unsigned>(entry.required_level),
+                        static_cast<unsigned>(entry.action_id));
+                }
+            }
+
+            if (category == shaiya::gm::Category::ExtendsCommand)
+            {
+                for (std::size_t i = 0; i < shaiya::gm::extendsCommands::kExtendsCommandCount; ++i)
+                {
+                    const auto& entry = shaiya::gm::extendsCommands::kExtendsCommands[i];
+                    if (!extends_command_matches_search(entry, search))
+                        continue;
+
+                    auto label = std::string(entry.command) + "##gm_ext_" + std::to_string(i);
+                    if (ImGui::Selectable(label.c_str()))
+                        post_gm_command_to_chat(entry.command);
+
+                    if (ImGui::IsItemHovered())
+                        ImGui::SetTooltip("%s", entry.summary ? entry.summary : "");
+                }
             }
 
             ImGui::TreePop();

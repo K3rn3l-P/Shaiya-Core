@@ -263,6 +263,24 @@
     <ClInclude Include="include\shaiya\Roulette.h">
       <Filter>include\shaiya</Filter>
     </ClInclude>
+    <ClInclude Include="src\include\custom_chat.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="src\include\speed_monitor.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="src\include\game_data_archive.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="src\include\game_addresses.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\shaiya\ProductInfo.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="src\include\GmCommandNative.h">
+      <Filter>include</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\dllmain.cpp">
@@ -457,9 +475,6 @@
     <ClCompile Include="src\imgui_layer_asm.cpp">
       <Filter>src</Filter>
     </ClCompile>
-    <ClCompile Include="src\imgui_layer_chatoptions.cpp">
-      <Filter>src</Filter>
-    </ClCompile>
     <ClCompile Include="src\imgui_layer_emoji.cpp">
       <Filter>src</Filter>
     </ClCompile>
@@ -482,6 +497,18 @@
       <Filter>src</Filter>
     </ClCompile>
     <ClCompile Include="src\imgui_layer_battleground_layout_debug.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\custom_chat.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\game_data_archive.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\speed_monitor.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\gm_commands_native.cpp">
       <Filter>src</Filter>
     </ClCompile>
   </ItemGroup>

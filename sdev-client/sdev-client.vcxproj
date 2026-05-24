@@ -14,8 +14,6 @@
     <ClInclude Include="include\main.h" />
     <ClInclude Include="include\shaiya\Roulette.h" />
     <ClInclude Include="src\include\config.h" />
-    <ClInclude Include="src\include\custom_gm_panel.h" />
-    <ClInclude Include="src\include\custom_chat.h" />
     <ClInclude Include="src\include\debug_panel.h" />
     <ClInclude Include="src\include\speed_monitor.h" />
     <ClInclude Include="src\include\game_data_archive.h" />
