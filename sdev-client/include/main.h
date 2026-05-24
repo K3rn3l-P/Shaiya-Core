@@ -26,6 +26,7 @@ void open_remote_npc_shortcut(int index);
 void sync_textbox_utf8_display(void* textBox);
 bool append_utf8_textbox_wchar(void* textBox, wchar_t wideChar);
 bool append_utf8_textbox_text(void* textBox, const char* utf8);
+bool set_utf8_textbox_text(void* textBox, const char* utf8);
 bool backspace_utf8_textbox_char(void* textBox);
 bool handle_imgui_layer_wnd_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam, LRESULT& result);
 bool play_custom_eft_from_ui(const char* fileName, bool loop, unsigned loopIntervalMs);

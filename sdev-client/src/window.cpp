@@ -246,7 +246,7 @@ namespace window
         if (msg == kClientGMCommandWindowMessage)
         {
             auto command = reinterpret_cast<const char*>(lParam);
-            append_utf8_textbox_text(&g_var->input.textBox, command);
+            set_utf8_textbox_text(&g_var->input.textBox, command);
             return 0;
         }
 

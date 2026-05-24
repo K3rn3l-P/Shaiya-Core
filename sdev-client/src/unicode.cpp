@@ -832,6 +832,32 @@ namespace
         sync_textbox_utf8_display(textBox);
         return true;
     }
+
+    bool set_utf8_textbox_text(void* textBox, const char* utf8)
+    {
+        if (!textBox)
+            return false;
+
+        if (!utf8)
+            utf8 = "";
+
+        auto count = static_cast<std::uint32_t>(std::strlen(utf8));
+        if (count >= 2048)
+            return false;
+
+        auto base = reinterpret_cast<std::uint8_t*>(textBox);
+        auto maxTextLength = *reinterpret_cast<std::uint32_t*>(base + 0x30);
+        if (maxTextLength && count > maxTextLength)
+            return false;
+
+        auto textObject = base + 0xAC;
+        using StringAssign = void*(__thiscall*)(void*, const char*, std::uint32_t);
+        auto assignString = reinterpret_cast<StringAssign>(0x405670);
+
+        assignString(textObject, utf8, count);
+        sync_textbox_utf8_display(textBox);
+        return true;
+    }
 }
 
 void __stdcall insert_utf8_textbox_char(void* textBox, int wParam, int /*lParam*/)
@@ -859,6 +885,32 @@ bool append_utf8_textbox_text(void* textBox, const char* utf8)
         return false;
 
     return append_utf8_textbox_bytes(textBox, utf8, count);
+}
+
+bool set_utf8_textbox_text(void* textBox, const char* utf8)
+{
+    if (!textBox)
+        return false;
+
+    if (!utf8)
+        utf8 = "";
+
+    auto count = static_cast<std::uint32_t>(std::strlen(utf8));
+    if (count >= 2048)
+        return false;
+
+    auto base = reinterpret_cast<std::uint8_t*>(textBox);
+    auto maxTextLength = *reinterpret_cast<std::uint32_t*>(base + 0x30);
+    if (maxTextLength && count > maxTextLength)
+        return false;
+
+    auto textObject = base + 0xAC;
+    using StringAssign = void*(__thiscall*)(void*, const char*, std::uint32_t);
+    auto assignString = reinterpret_cast<StringAssign>(0x405670);
+
+    assignString(textObject, utf8, count);
+    sync_textbox_utf8_display(textBox);
+    return true;
 }
 
 bool backspace_utf8_textbox_char(void* textBox)
