@@ -70,6 +70,14 @@ namespace packet
         roulette_event::rewardTypeId = incoming->rewardTypeId;
         roulette_event::rewardCount = incoming->rewardCount;
         roulette_event::rewardChance = incoming->rewardChance;
+        roulette_event::featuredRewardIndex = incoming->featuredRewardIndex;
+        roulette_event::guaranteedRewardIndex = incoming->guaranteedRewardIndex;
+        roulette_event::guaranteedSpinTarget = incoming->guaranteedSpinTarget;
+        roulette_event::guaranteedSpinProgress = incoming->guaranteedSpinProgress;
+        roulette_event::recentWinnerCount = incoming->recentWinnerCount;
+        roulette_event::recentWinnerRewardIndex = incoming->recentWinnerRewardIndex;
+        roulette_event::recentWinnerAgeMinutes = incoming->recentWinnerAgeMinutes;
+        roulette_event::recentWinnerName = incoming->recentWinnerName;
         roulette_event::listReceived = true;
         roulette_event::hasList = incoming->itemCount > 0;
     }
@@ -89,6 +97,7 @@ namespace packet
         roulette_event::rewardTypeIdCurrent = incoming->rewardTypeId;
         roulette_event::rewardCountCurrent = incoming->rewardCount;
         roulette_event::lastGrantSuccess = false;
+        roulette_event::grantEffectStartTick = 0;
         roulette_event::celebrationUntilTick = 0;
         ++roulette_event::spinSerial;
     }
@@ -103,7 +112,10 @@ namespace packet
         roulette_event::rewardTypeIdCurrent = incoming->rewardTypeId;
         roulette_event::rewardCountCurrent = incoming->rewardCount;
         if (roulette_event::lastGrantSuccess)
+        {
+            roulette_event::grantEffectStartTick = GetTickCount();
             roulette_event::celebrationUntilTick = GetTickCount() + 2500U;
+        }
         ++roulette_event::grantSerial;
     }
 
