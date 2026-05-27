@@ -765,3 +765,4 @@ namespace imgui_layer
     void clear_emoji_text_overlays();
     void handle_emoji_button_interaction();
 }
+ 
