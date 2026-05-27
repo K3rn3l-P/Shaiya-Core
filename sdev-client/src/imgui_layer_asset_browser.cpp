@@ -310,6 +310,16 @@ namespace imgui_layer
         }
     }
 
+    const std::string& get_game_base_dir()
+    {
+        return game_data::base_dir();
+    }
+
+    std::string get_game_relative_path(const char* relative)
+    {
+        return game_data::relative_path(relative);
+    }
+
     std::string normalize_asset_browser_text(std::string value)
     {
         return to_lower_slash_path(trim_path_input(std::move(value)));

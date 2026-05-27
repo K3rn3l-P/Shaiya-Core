@@ -47,6 +47,7 @@ using std::min;
 #include "include/shaiya/Static.h"
 #include "include/shaiya/Roulette.h"
 #include "include/shaiya/RewardItemEvent.h"
+#include "include/shaiya/Teleport.h"
 using namespace shaiya;
 
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
@@ -93,6 +94,13 @@ namespace imgui_layer
     constexpr const char* kBattlegroundPanelXKey = "BATTLEFIELD_PANEL_X";
     constexpr const char* kBattlegroundPanelYKey = "BATTLEFIELD_PANEL_Y";
     constexpr auto kBattlegroundPanelSize = ImVec2(722.0f, 458.0f);
+    constexpr auto kDefaultTeleportButtonPosition = ImVec2(494.0f, 938.0f);
+    constexpr const char* kTeleportBtnXKey = "TELEPORT_BTN_X";
+    constexpr const char* kTeleportBtnYKey = "TELEPORT_BTN_Y";
+    constexpr const char* kTeleportPanelXKey = "TELEPORT_PANEL_X";
+    constexpr const char* kTeleportPanelYKey = "TELEPORT_PANEL_Y";
+    constexpr auto kTeleportButtonSize = ImVec2(32.0f, 33.0f);
+    constexpr auto kTeleportPanelSize = ImVec2(230.0f, 310.0f);
     // In-game chat overlay persistence keys
     constexpr const char* kIngameChatActiveKey = "INGAME_CHAT_ACTIVE";
     constexpr const char* kParallelChatActiveKey = "PARALLEL_CHAT_ACTIVE";
@@ -100,8 +108,16 @@ namespace imgui_layer
     constexpr const char* kIdViewEnabledKey = "ID_VIEW_ENABLED";
     constexpr const char* kCaptureGmInputKey = "CAPTURE_GM_INPUT";
     constexpr DWORD kEmojiSceneGraceMs = 4000;
-    constexpr DWORD kEmojiMapChangeGraceMs = 12000;
-    constexpr DWORD kMapTransitionGraceMs = 12000;
+
+    // Game screen state — address 0x7C48F8 holds an int that tells us
+    // exactly what screen the client is on.  Verified in-game:
+    //   3 = character select,  5 = loading screen,  6 = in-game world.
+    // Using this as the primary gate eliminates the old timer-based
+    // cooldown entirely.  We still keep a short frame debounce so the
+    // overlay doesn't flicker on the exact frame the state flips to 6.
+    constexpr uintptr_t kGameScreenStateAddr = 0x7C48F8;
+    constexpr int       kScreenStateInGame  = 6;
+    constexpr int   kMinStableFrames     = 30;    // ~0.5 s at 60 fps
 
     // -----------------------------------------------------------------------
     //  Shared inline state
@@ -109,9 +125,11 @@ namespace imgui_layer
     inline std::atomic_bool g_running = false;
     inline bool g_idViewEnabled = true;  // mob/NPC ID overlay (GM-only, persisted)
 
-    // Central map transition tracking (used by all UI, not just emojis)
-    inline uint16_t g_mapTransLastMapId = 0;
-    inline DWORD    g_mapTransGraceUntilTick = 0;
+    // Scene stability tracking — frame debounce after screen state → in-game
+    inline int      g_sceneStableFrames = 0;       // consecutive in-game frames
+
+    // Native UI visibility tracking (F11 toggles all game windows)
+    inline bool     g_nativeUIHidden = false;
     inline bool g_showPanel = false;
     inline bool g_sentWelcomeMessage = false;
     inline bool g_waitingWelcomeMessage = false;
@@ -146,9 +164,9 @@ namespace imgui_layer
     // Hit-test rects for every overlay element
     // Main map anchor — object pointer captured once from init; pos/size read live each frame.
     inline uintptr_t g_mainMapObjectPtr = 0;
-    constexpr float kButtonAnchorOffsetX = 13.0f;
-    constexpr float kButtonAnchorOffsetY = 18.0f;
-    constexpr float kButtonAnchorStride = 34.0f;
+    constexpr float kButtonAnchorOffsetX = 14.0f;
+    constexpr float kButtonAnchorOffsetY = 19.0f;
+    constexpr float kButtonAnchorStride = 26.5f;
 
     void update_anchored_button_positions();
 
@@ -169,6 +187,8 @@ namespace imgui_layer
     inline RECT g_npcButtonRect{};
     inline RECT g_npcPanelRect{};
     inline RECT g_battlegroundPanelRect{};
+    inline RECT g_teleportButtonRect{};
+    inline RECT g_teleportPanelRect{};
 
     // Per-element positions
     inline ImVec2 g_panelPosition = ImVec2(80.0f, 80.0f);
@@ -183,16 +203,18 @@ namespace imgui_layer
     inline ImVec2 g_npcButtonPosition = kDefaultNpcButtonPosition;
     inline ImVec2 g_npcPanelPosition = ImVec2(-1.0f, -1.0f);
     inline ImVec2 g_battlegroundPanelPosition = ImVec2(-1.0f, -1.0f);
+    inline ImVec2 g_teleportButtonPosition = kDefaultTeleportButtonPosition;
+    inline ImVec2 g_teleportPanelPosition = ImVec2(-1.0f, -1.0f);
     // In-game parallel chat overlay
     // Positions are normalized 0.0–1.0 of DisplaySize.  Horizontal pos and
     // all sizes are fixed; only the vertical offset is user-adjustable.
     // The offset shifts both upper + lower windows together.
-    constexpr float kChatNormX = 0.0f;       // left edge
-    constexpr float kChatNormW = 0.20f;      // 20% of screen width
-    constexpr float kUpperNormY = 0.40f;     // upper starts at 40%
-    constexpr float kUpperNormH = 0.30f;     // 30% tall
-    constexpr float kLowerNormY = 0.60f;     // lower starts at 60%
-    constexpr float kLowerNormH = 0.30f;     // 30% tall
+    constexpr float kChatNormX = 0.0f;
+    constexpr float kChatNormW = 0.20f;
+    constexpr float kUpperNormY = 0.40f;
+    constexpr float kUpperNormH = 0.30f;
+    constexpr float kLowerNormY = 0.60f;
+    constexpr float kLowerNormH = 0.30f;
     inline ImVec2 g_upperChatPosition = ImVec2(kChatNormX, kUpperNormY);
     inline ImVec2 g_upperChatSize = ImVec2(kChatNormW, kUpperNormH);
     inline ImVec2 g_lowerChatPosition = ImVec2(kChatNormX, kLowerNormY);
@@ -204,7 +226,7 @@ namespace imgui_layer
     inline bool   g_hideNativeChatVisuals = false;
     inline bool   g_captureGmInput = true;
 
-    // Parallel chat font — hardcoded to Tahoma 14px with shadow
+    // Parallel chat font — Arial 14px with shadow (matches game D3DX font)
     inline ImFont* g_parallelFont = nullptr;
     inline bool    g_parallelFontLoaded = false;
 
@@ -226,6 +248,8 @@ namespace imgui_layer
     inline bool g_draggedSettingsButton = false;
     inline bool g_draggingNpcButton = false;
     inline bool g_draggedNpcButton = false;
+    inline bool g_draggingTeleportButton = false;
+    inline bool g_draggedTeleportButton = false;
     inline bool g_panelMouseWasDown = false;
     inline ImVec2 g_panelDragOffset = ImVec2(0.0f, 0.0f);
     inline float g_panelScaleDragStart = 1.0f;
@@ -233,6 +257,7 @@ namespace imgui_layer
     inline ImVec2 g_rouletteButtonDragOffset = ImVec2(0.0f, 0.0f);
     inline ImVec2 g_settingsButtonDragOffset = ImVec2(0.0f, 0.0f);
     inline ImVec2 g_npcButtonDragOffset = ImVec2(0.0f, 0.0f);
+    inline ImVec2 g_teleportButtonDragOffset = ImVec2(0.0f, 0.0f);
     inline bool g_emojisEnabled = true;
     inline bool g_gifsEnabled = true;
     inline bool g_clearImguiActiveId = false;
@@ -240,6 +265,7 @@ namespace imgui_layer
     inline bool g_showSettingsPanel = false;
     inline bool g_showNpcPanel = false;
     inline bool g_showBattlegroundPanel = false;
+    inline bool g_showTeleportPanel = false;
     inline int g_battlegroundPage = 0;
 
     struct BattlegroundClientEntry
@@ -305,6 +331,11 @@ namespace imgui_layer
     inline uint64_t g_npcIconDataSize = 0;
     inline bool g_npcIconFound = false;
     inline bool g_npcIconLoadAttempted = false;
+    inline LPDIRECT3DTEXTURE9 g_teleportIconTexture = nullptr;
+    inline uint64_t g_teleportIconDataOffset = 0;
+    inline uint64_t g_teleportIconDataSize = 0;
+    inline bool g_teleportIconFound = false;
+    inline bool g_teleportIconLoadAttempted = false;
 
     struct BattlegroundMapTexture
     {
@@ -694,6 +725,13 @@ namespace imgui_layer
     void draw_reward_button_overlay();
     void update_reward_auto_claim();
     float reward_item_progress_ratio();
+
+    // imgui_layer_teleport.cpp
+    void draw_teleport_button_overlay();
+    void draw_teleport_panel();
+    void request_teleport_list();
+    void request_teleport_move(uint8_t index);
+    LPDIRECT3DTEXTURE9 load_teleport_icon_texture();
 
     // imgui_layer_emoji.cpp
     void ensure_emoji_catalog_loaded();

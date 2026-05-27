@@ -64,8 +64,9 @@
 //     - Tracker map is pruned when it exceeds 500 entries.
 //
 //  6. RENDER CAP
-//     - Hard limit of 64 wrapped lines per panel per frame, preventing
-//       render-time lag from an extreme flood filling the ring buffer.
+//     - Hard limit of 1536 wrapped lines per panel per frame (512 stored
+//       messages x 3 wrapped lines).  draw_line_stack() still draws only
+//       the visible slice.
 //
 // ---- Ring buffer ----
 //
@@ -98,8 +99,13 @@ namespace custom_chat
 
     // Render the overlay.  Called once per ImGui frame from the render
     // thread.  Reads native chat metrics for positioning and draws the
-    // upper + lower line stacks.
+    // upper + lower line stacks.  Text runs are queued for D3DX rendering.
     void render_ingame_chat();
+
+    // Flush queued D3DX text runs using the game's native ID3DXFont.
+    // Must be called AFTER ImGui_ImplDX9_RenderDrawData() so the D3DX
+    // text renders on top of the ImGui layer (emoji quads).
+    void flush_d3dx_text();
 
     // Draws the GM debug panel controls for custom chat options
     // (wrap widths, color customisation).

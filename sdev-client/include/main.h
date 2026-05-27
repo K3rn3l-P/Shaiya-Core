@@ -17,6 +17,8 @@ inline constexpr unsigned kClientRouletteListWindowMessage = 0x8000 + 0x4A4;
 inline constexpr unsigned kClientRouletteRollWindowMessage = 0x8000 + 0x4A3;
 inline constexpr unsigned kClientEmojiTokenWindowMessage = 0x8000 + 0x4A5;
 inline constexpr unsigned kClientGMCommandWindowMessage = 0x8000 + 0x4A6;
+inline constexpr unsigned kClientTeleportListWindowMessage = 0x8000 + 0x4A7;
+inline constexpr unsigned kClientTeleportMoveWindowMessage = 0x8000 + 0x4A8;
 void queue_client_sysmsg(int chatType, int messageNumber);
 void flush_client_sysmsg_queue();
 void tick_client_welcome_sysmsg();

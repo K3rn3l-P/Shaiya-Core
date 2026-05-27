@@ -19,6 +19,12 @@ namespace imgui_layer
 {
     bool is_emoji_transition_grace_active()
     {
+        // Delegate map-change detection to the central frame-based debounce
+        // (kMinStableFrames).  Keep the scene-lost grace (kEmojiSceneGraceMs)
+        // for login/character-select transitions.
+        if (is_map_transition_active())
+            return true;
+
         return g_emojiMapGraceUntilTick != 0
             && static_cast<int32_t>(GetTickCount() - g_emojiMapGraceUntilTick) < 0;
     }
@@ -92,8 +98,10 @@ namespace imgui_layer
         if (mapId != 0 && g_lastEmojiMapId != 0 && mapId != g_lastEmojiMapId)
         {
             g_lastEmojiMapId = mapId;
-            g_emojiMapGraceUntilTick = now + kEmojiMapChangeGraceMs;
-            g_emojiSceneTransitionUntilTick = now + kEmojiMapChangeGraceMs;
+            // Don't set g_emojiMapGraceUntilTick — the central frame-based
+            // debounce (is_map_transition_active / kMinStableFrames) now
+            // handles suppression.  We still clear stale overlays and close
+            // the picker since their world positions are invalidated.
             g_showEmojiPicker = false;
             clear_emoji_text_overlays();
         }
@@ -114,16 +122,6 @@ namespace imgui_layer
     {
         if (ImGui::IsItemClicked(ImGuiMouseButton_Left))
             g_showEmojiPicker = !g_showEmojiPicker;
-    }
-
-    const std::string& get_game_base_dir()
-    {
-        return game_data::base_dir();
-    }
-
-    std::string get_game_relative_path(const char* relativePath)
-    {
-        return game_data::relative_path(relativePath);
     }
 
     bool parse_visual_token_file_name(const char* fileName, const char* prefix, const char* extension, int& index)
@@ -290,6 +288,12 @@ namespace imgui_layer
                     g_npcIconFound = true;
                     g_npcIconDataOffset = entry.offset;
                     g_npcIconDataSize = entry.size;
+                }
+                else if (entry.lowerFileName == "teleporticon.png" && !g_teleportIconFound)
+                {
+                    g_teleportIconFound = true;
+                    g_teleportIconDataOffset = entry.offset;
+                    g_teleportIconDataSize = entry.size;
                 }
             }
         });
@@ -733,7 +737,9 @@ namespace imgui_layer
         // them hides the notice payload and leaves the game with a tiny blank
         // balloon, so CUSTOMCHAT only suppresses regular upper/lower chat box
         // text and lets these native presentation paths keep their message.
-        return (chatType >= 23 && chatType <= 33) || chatType == 48 || chatType == 50;
+        return chatType == 23 || chatType == 24 || chatType == 25 ||
+               chatType == 28 || chatType == 29 || chatType == 30 ||
+               chatType == 48 || chatType == 50;
     }
 
     static float measure_chat_prefix_width_fallback(const char* text, int len)
