@@ -91,9 +91,6 @@ namespace imgui_layer
     constexpr const char* kNpcPanelYKey = "NPC_PANEL_Y";
     constexpr auto kNpcButtonSize = ImVec2(32.0f, 33.0f);
     constexpr auto kNpcPanelSize = ImVec2(210.0f, 270.0f);
-    constexpr const char* kBattlegroundPanelXKey = "BATTLEFIELD_PANEL_X";
-    constexpr const char* kBattlegroundPanelYKey = "BATTLEFIELD_PANEL_Y";
-    constexpr auto kBattlegroundPanelSize = ImVec2(722.0f, 458.0f);
     constexpr auto kDefaultTeleportButtonPosition = ImVec2(494.0f, 938.0f);
     constexpr const char* kTeleportBtnXKey = "TELEPORT_BTN_X";
     constexpr const char* kTeleportBtnYKey = "TELEPORT_BTN_Y";
@@ -186,7 +183,6 @@ namespace imgui_layer
     inline RECT g_settingsPanelRect{};
     inline RECT g_npcButtonRect{};
     inline RECT g_npcPanelRect{};
-    inline RECT g_battlegroundPanelRect{};
     inline RECT g_teleportButtonRect{};
     inline RECT g_teleportPanelRect{};
 
@@ -202,7 +198,6 @@ namespace imgui_layer
     inline ImVec2 g_settingsPanelPosition = ImVec2(-1.0f, -1.0f);
     inline ImVec2 g_npcButtonPosition = kDefaultNpcButtonPosition;
     inline ImVec2 g_npcPanelPosition = ImVec2(-1.0f, -1.0f);
-    inline ImVec2 g_battlegroundPanelPosition = ImVec2(-1.0f, -1.0f);
     inline ImVec2 g_teleportButtonPosition = kDefaultTeleportButtonPosition;
     inline ImVec2 g_teleportPanelPosition = ImVec2(-1.0f, -1.0f);
     // In-game parallel chat overlay
@@ -264,7 +259,6 @@ namespace imgui_layer
     inline bool g_rollMouseWasDown = false;
     inline bool g_showSettingsPanel = false;
     inline bool g_showNpcPanel = false;
-    inline bool g_showBattlegroundPanel = false;
     inline bool g_showTeleportPanel = false;
     inline int g_battlegroundPage = 0;
 
@@ -682,7 +676,6 @@ namespace imgui_layer
     void draw_settings_button_overlay();
     void draw_npc_panel();
     void draw_npc_button_overlay();
-    void draw_battleground_panel();
     void draw_battleground_layout_debug_panel();
     std::string build_battleground_layout_dump();
     LPDIRECT3DTEXTURE9 get_battleground_debug_override_texture(BattlegroundDebugImageSlot slot);
@@ -803,4 +796,3 @@ namespace imgui_layer
     void clear_emoji_text_overlays();
     void handle_emoji_button_interaction();
 }
- 

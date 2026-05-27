@@ -740,7 +740,6 @@ namespace imgui_layer
         g_settingsPanelRect = {};
         g_npcButtonRect = {};
         g_npcPanelRect = {};
-        g_battlegroundPanelRect = {};
         g_teleportButtonRect = {};
         g_teleportPanelRect = {};
         ensure_emoji_catalog_loaded();
@@ -805,11 +804,6 @@ namespace imgui_layer
                 draw_settings_panel();
                 draw_npc_panel();
                 draw_teleport_panel();
-                draw_battleground_panel();
-            }
-            else
-            {
-                g_showBattlegroundPanel = false;
             }
         }
 

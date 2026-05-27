@@ -125,8 +125,6 @@ namespace imgui_layer {
         g_npcButtonPosition.y = read_imgui_float(kNpcBtnYKey, g_npcButtonPosition.y);
         g_npcPanelPosition.x = read_imgui_float(kNpcPanelXKey, -1.0f);
         g_npcPanelPosition.y = read_imgui_float(kNpcPanelYKey, -1.0f);
-        g_battlegroundPanelPosition.x = read_imgui_float(kBattlegroundPanelXKey, -1.0f);
-        g_battlegroundPanelPosition.y = read_imgui_float(kBattlegroundPanelYKey, -1.0f);
         g_teleportButtonPosition.x = read_imgui_float(kTeleportBtnXKey, g_teleportButtonPosition.x);
         g_teleportButtonPosition.y = read_imgui_float(kTeleportBtnYKey, g_teleportButtonPosition.y);
         g_teleportPanelPosition.x = read_imgui_float(kTeleportPanelXKey, -1.0f);
@@ -154,8 +152,6 @@ namespace imgui_layer {
         write_imgui_float(kNpcBtnYKey, g_npcButtonPosition.y);
         write_imgui_float(kNpcPanelXKey, g_npcPanelPosition.x);
         write_imgui_float(kNpcPanelYKey, g_npcPanelPosition.y);
-        write_imgui_float(kBattlegroundPanelXKey, g_battlegroundPanelPosition.x);
-        write_imgui_float(kBattlegroundPanelYKey, g_battlegroundPanelPosition.y);
         write_imgui_float(kTeleportBtnXKey, g_teleportButtonPosition.x);
         write_imgui_float(kTeleportBtnYKey, g_teleportButtonPosition.y);
         write_imgui_float(kTeleportPanelXKey, g_teleportPanelPosition.x);
@@ -1174,195 +1170,6 @@ namespace imgui_layer {
         }
     }
 
-    void draw_battleground_panel()
-    {
-        if (!g_showBattlegroundPanel)
-            return;
-
-        ensure_battleground_entries_loaded();
-        if (g_battlegroundEntries.empty())
-        {
-            g_showBattlegroundPanel = false;
-            return;
-        }
-
-        auto& io = ImGui::GetIO();
-        if (g_battlegroundPanelPosition.x < 0.0f || g_battlegroundPanelPosition.y < 0.0f)
-        {
-            auto centered = ImVec2((io.DisplaySize.x - kBattlegroundPanelSize.x) * 0.5f,
-                (io.DisplaySize.y - kBattlegroundPanelSize.y) * 0.5f);
-            g_battlegroundPanelPosition = clamp_window_position(centered, kBattlegroundPanelSize, io.DisplaySize);
-            mark_imgui_settings_dirty();
-        }
-        else
-        {
-            g_battlegroundPanelPosition = clamp_window_position(g_battlegroundPanelPosition, kBattlegroundPanelSize, io.DisplaySize);
-        }
-
-        ImGui::SetNextWindowPos(g_battlegroundPanelPosition, ImGuiCond_Appearing);
-        ImGui::SetNextWindowSize(kBattlegroundPanelSize, ImGuiCond_Always);
-        ImGui::SetNextWindowBgAlpha(0.0f);
-
-        bool panelOpen = g_showBattlegroundPanel;
-        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
-        ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
-        if (ImGui::Begin(
-            "##battleground_panel",
-            &panelOpen,
-            ImGuiWindowFlags_NoTitleBar
-            | ImGuiWindowFlags_NoCollapse
-            | ImGuiWindowFlags_NoResize
-            | ImGuiWindowFlags_NoSavedSettings
-            | ImGuiWindowFlags_NoFocusOnAppearing
-            | ImGuiWindowFlags_NoScrollbar
-            | ImGuiWindowFlags_NoScrollWithMouse))
-        {
-            auto pos = ImGui::GetWindowPos();
-            auto size = ImGui::GetWindowSize();
-            remember_rect(g_battlegroundPanelRect, pos, ImVec2(pos.x + size.x, pos.y + size.y));
-            if (std::fabs(pos.x - g_battlegroundPanelPosition.x) >= 0.5f
-                || std::fabs(pos.y - g_battlegroundPanelPosition.y) >= 0.5f)
-            {
-                g_battlegroundPanelPosition = pos;
-                mark_imgui_settings_dirty();
-            }
-
-            auto* drawList = ImGui::GetWindowDrawList();
-            if (auto* backgroundTexture = get_battleground_background_texture())
-            {
-                drawList->AddImage(reinterpret_cast<ImTextureID>(backgroundTexture), pos, ImVec2(pos.x + size.x, pos.y + size.y));
-            }
-            else
-            {
-                drawList->AddRectFilled(pos, ImVec2(pos.x + size.x, pos.y + size.y), IM_COL32(12, 12, 12, 238), 10.0f);
-                drawList->AddRect(pos, ImVec2(pos.x + size.x, pos.y + size.y), IM_COL32(162, 132, 92, 255), 10.0f, 0, 2.0f);
-            }
-
-            auto nativeW = std::max(1.0f, g_battlegroundLayoutDebug.backgroundNativeWidth);
-            auto nativeH = std::max(1.0f, g_battlegroundLayoutDebug.backgroundNativeHeight);
-            auto scaleX = size.x / nativeW;
-            auto scaleY = size.y / nativeH;
-
-            auto closeSize = ImVec2(
-                std::max(8.0f, g_battlegroundLayoutDebug.closeButtonSize.x) * scaleX,
-                std::max(8.0f, g_battlegroundLayoutDebug.closeButtonSize.y) * scaleY);
-            auto closePos = ImVec2(
-                pos.x + (size.x - (g_battlegroundLayoutDebug.closeRightOffset * scaleX)),
-                pos.y + (g_battlegroundLayoutDebug.closeTopOffset * scaleY));
-            if (draw_battleground_icon_button(
-                "bg_close",
-                get_battleground_button_texture("assets\\maps\\panel\\button_close.png", g_battlegroundCloseButtonTexture),
-                closePos,
-                closeSize,
-                "x"))
-            {
-                panelOpen = false;
-                release_imgui_capture();
-            }
-
-            auto columns = std::clamp(g_battlegroundLayoutDebug.gridColumns, 1, 8);
-            auto rows = std::clamp(g_battlegroundLayoutDebug.gridRows, 1, 8);
-            auto pageSize = columns * rows;
-            const int totalEntries = static_cast<int>(g_battlegroundEntries.size());
-            const int totalPages = std::max(1, (totalEntries + pageSize - 1) / pageSize);
-            g_battlegroundPage = std::clamp(g_battlegroundPage, 0, totalPages - 1);
-
-            auto gridMin = ImVec2(
-                pos.x + (g_battlegroundLayoutDebug.gridMin.x * scaleX),
-                pos.y + (g_battlegroundLayoutDebug.gridMin.y * scaleY));
-            auto gridMax = ImVec2(
-                pos.x + (g_battlegroundLayoutDebug.gridMax.x * scaleX),
-                pos.y + (g_battlegroundLayoutDebug.gridMax.y * scaleY));
-            auto cellWidth = (gridMax.x - gridMin.x) / static_cast<float>(columns);
-            auto cellHeight = (gridMax.y - gridMin.y) / static_cast<float>(rows);
-
-            auto cardInsetX = g_battlegroundLayoutDebug.cardInset.x * scaleX;
-            auto cardInsetY = g_battlegroundLayoutDebug.cardInset.y * scaleY;
-            auto cardWidth = cellWidth - (cardInsetX * 2.0f);
-            auto cardHeight = cellHeight - (cardInsetY * 2.0f);
-
-            for (int row = 0; row < rows; ++row)
-            {
-                for (int col = 0; col < columns; ++col)
-                {
-                    auto indexOnPage = row * columns + col;
-                    auto entryIndex = g_battlegroundPage * pageSize + indexOnPage;
-                    auto cellPos = ImVec2(
-                        gridMin.x + col * cellWidth + cardInsetX,
-                        gridMin.y + row * cellHeight + cardInsetY);
-                    ImGui::SetCursorScreenPos(cellPos);
-
-                    if (entryIndex >= totalEntries)
-                    {
-                        ImGui::Dummy(ImVec2(cardWidth, cardHeight));
-                        continue;
-                    }
-
-                    if (draw_battleground_card(g_battlegroundEntries[entryIndex], ImVec2(cardWidth, cardHeight)))
-                    {
-                        g_showBattlegroundPanel = false;
-                        release_imgui_capture();
-                    }
-                }
-            }
-
-            auto centerX = pos.x + (size.x * 0.5f);
-            auto navY = pos.y + (g_battlegroundLayoutDebug.navY * scaleY);
-            auto navButtonSize = ImVec2(
-                std::max(8.0f, g_battlegroundLayoutDebug.navButtonSize.x) * scaleX,
-                std::max(8.0f, g_battlegroundLayoutDebug.navButtonSize.y) * scaleY);
-            char pageLabel[32]{};
-            std::snprintf(pageLabel, sizeof(pageLabel), "%d / %d", g_battlegroundPage + 1, totalPages);
-            auto pageTextSize = ImGui::CalcTextSize(pageLabel);
-            auto navGap = g_battlegroundLayoutDebug.navGap * scaleX;
-            auto navGroupWidth = navButtonSize.x * 2.0f + navGap * 2.0f + pageTextSize.x;
-            auto navStartX = centerX - (navGroupWidth * 0.5f);
-
-            bool prevClicked = draw_battleground_icon_button(
-                "bg_prev",
-                get_battleground_button_texture("assets\\maps\\panel\\button_prev.png", g_battlegroundPrevButtonTexture),
-                ImVec2(navStartX, navY),
-                navButtonSize,
-                "<");
-
-            auto textX = navStartX + navButtonSize.x + navGap;
-            auto textY = navY + ((navButtonSize.y - pageTextSize.y) * 0.5f) + (g_battlegroundLayoutDebug.navTextYOffset * scaleY);
-            ImGui::SetCursorScreenPos(ImVec2(textX, textY));
-            ImGui::TextColored(ImVec4(0.96f, 0.89f, 0.78f, 1.0f), "%s", pageLabel);
-
-            bool nextClicked = draw_battleground_icon_button(
-                "bg_next",
-                get_battleground_button_texture("assets\\maps\\panel\\button_next.png", g_battlegroundNextButtonTexture),
-                ImVec2(navStartX + navButtonSize.x + navGap + pageTextSize.x + navGap, navY),
-                navButtonSize,
-                ">");
-
-            if (g_battlegroundLayoutDebug.drawGuides)
-            {
-                drawList->AddRect(gridMin, gridMax, IM_COL32(255, 180, 30, 180), 0.0f, 0, 1.5f);
-                drawList->AddCircleFilled(closePos, 4.0f, IM_COL32(255, 90, 90, 220), 12);
-                drawList->AddCircleFilled(ImVec2(navStartX, navY), 4.0f, IM_COL32(90, 210, 255, 220), 12);
-                drawList->AddCircleFilled(ImVec2(navStartX + navButtonSize.x + navGap + pageTextSize.x + navGap, navY), 4.0f, IM_COL32(90, 210, 255, 220), 12);
-            }
-
-            if (prevClicked && g_battlegroundPage > 0)
-            {
-                --g_battlegroundPage;
-                release_imgui_capture();
-            }
-
-            if (nextClicked && g_battlegroundPage + 1 < totalPages)
-            {
-                ++g_battlegroundPage;
-                release_imgui_capture();
-            }
-        }
-        ImGui::End();
-        ImGui::PopStyleVar(2);
-
-        g_showBattlegroundPanel = panelOpen;
-    }
-
     void ensure_battleground_entries_ready()
     {
         ensure_battleground_entries_loaded();
@@ -1462,20 +1269,13 @@ namespace imgui_layer {
 
 void toggle_battleground_panel()
 {
-    imgui_layer::ensure_battleground_entries_ready();
-    if (imgui_layer::g_battlegroundEntries.empty())
-        return;
-
-    imgui_layer::g_showBattlegroundPanel = !imgui_layer::g_showBattlegroundPanel;
 }
 
 void close_battleground_panel()
 {
-    imgui_layer::g_showBattlegroundPanel = false;
 }
 
 bool is_battleground_panel_available()
 {
-    imgui_layer::ensure_battleground_entries_ready();
-    return !imgui_layer::g_battlegroundEntries.empty();
+    return false;
 }
