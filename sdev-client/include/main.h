@@ -36,9 +36,6 @@ void stop_custom_eft_from_ui();
 bool is_custom_eft_loop_enabled_from_ui();
 unsigned get_custom_eft_loop_interval_from_ui();
 const char* get_custom_eft_name_from_ui();
-void toggle_battleground_panel();
-void close_battleground_panel();
-bool is_battleground_panel_available();
 
 namespace hook
 {

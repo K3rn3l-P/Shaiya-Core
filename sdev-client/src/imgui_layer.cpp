@@ -72,7 +72,6 @@ namespace imgui_layer
             return custom_gm_panel::is_open()
                 || debug_panel::is_open()
                 || g_showRouletteLayoutDebugPanel
-                || g_showBattlegroundLayoutDebugPanel
                 || g_showCharacterLayoutDebugPanel;
         }
 
@@ -575,7 +574,6 @@ namespace imgui_layer
     {
         release_emoji_textures();
         release_item_icon_textures();
-        release_battleground_map_textures();
         release_texture(g_rouletteBgTexture, g_rouletteBgLoadAttempted);
         release_texture(g_rewardIconTexture, g_rewardIconLoadAttempted);
         release_texture(g_rouletteIconTexture, g_rouletteIconLoadAttempted);
@@ -788,7 +786,6 @@ namespace imgui_layer
             debug_panel::render();
             custom_chat::render_ingame_chat();
             draw_roulette_layout_debug_panel();
-            draw_battleground_layout_debug_panel();
             draw_character_layout_debug_panel();
 
             if (g_showPanel)

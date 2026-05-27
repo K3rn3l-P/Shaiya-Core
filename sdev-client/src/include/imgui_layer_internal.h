@@ -260,22 +260,6 @@ namespace imgui_layer
     inline bool g_showSettingsPanel = false;
     inline bool g_showNpcPanel = false;
     inline bool g_showTeleportPanel = false;
-    inline int g_battlegroundPage = 0;
-
-    struct BattlegroundClientEntry
-    {
-        int id = 0;
-        int mapId = -1;
-        int levelMin = 0;
-        int levelMax = 0;
-        bool enabled = true;
-        std::string title;
-        std::string subtitle;
-        std::string tag;
-    };
-
-    inline std::vector<BattlegroundClientEntry> g_battlegroundEntries;
-    inline bool g_battlegroundEntriesLoaded = false;
 
     // Reward bar state
     constexpr const char* kRewardAutoClaimKey = "REWARD_AUTOCLAIM";
@@ -330,24 +314,6 @@ namespace imgui_layer
     inline uint64_t g_teleportIconDataSize = 0;
     inline bool g_teleportIconFound = false;
     inline bool g_teleportIconLoadAttempted = false;
-
-    struct BattlegroundMapTexture
-    {
-        uint64_t dataOffset = 0;
-        uint64_t dataSize = 0;
-        bool found = false;
-        bool lookupAttempted = false;
-        bool loadAttempted = false;
-        LPDIRECT3DTEXTURE9 texture = nullptr;
-    };
-
-    inline std::unordered_map<int, BattlegroundMapTexture> g_battlegroundMapTextures;
-    inline std::unordered_map<int, BattlegroundMapTexture> g_battlegroundCurrentMapTextures;
-    inline std::unordered_map<int, BattlegroundMapTexture> g_battlegroundDisabledMapTextures;
-    inline BattlegroundMapTexture g_battlegroundBackgroundTexture;
-    inline BattlegroundMapTexture g_battlegroundCloseButtonTexture;
-    inline BattlegroundMapTexture g_battlegroundPrevButtonTexture;
-    inline BattlegroundMapTexture g_battlegroundNextButtonTexture;
 
     // Roulette panel layout
     constexpr float kRollButtonOffsetX = -1.0f;
@@ -415,31 +381,6 @@ namespace imgui_layer
     inline RouletteLayoutDebugState g_rouletteLayoutDebug{};
     inline bool g_showRouletteLayoutDebugPanel = false;
 
-    struct BattlegroundLayoutDebugState
-    {
-        bool drawGuides = false;
-        float backgroundNativeWidth = 902.0f;
-        float backgroundNativeHeight = 572.0f;
-
-        float closeRightOffset = 44.0f;
-        float closeTopOffset = 24.0f;
-        ImVec2 closeButtonSize = ImVec2(26.0f, 26.0f);
-
-        int gridColumns = 3;
-        int gridRows = 4;
-        ImVec2 gridMin = ImVec2(36.0f, 80.0f);
-        ImVec2 gridMax = ImVec2(866.0f, 490.0f);
-        ImVec2 cardInset = ImVec2(8.0f, 6.0f);
-
-        float navY = 526.0f;
-        ImVec2 navButtonSize = ImVec2(36.0f, 24.0f);
-        float navGap = 10.0f;
-        float navTextYOffset = -1.0f;
-    };
-
-    inline BattlegroundLayoutDebugState g_battlegroundLayoutDebug{};
-    inline bool g_showBattlegroundLayoutDebugPanel = false;
-
     struct CharacterLayoutDebugState
     {
         bool drawGuides = false;
@@ -493,20 +434,6 @@ namespace imgui_layer
     };
 
     inline std::array<RouletteDebugImageOverride, static_cast<std::size_t>(RouletteDebugImageSlot::Count)> g_rouletteDebugImageOverrides;
-
-    enum class BattlegroundDebugImageSlot : uint8_t
-    {
-        Background = 0,
-        CloseButton,
-        PrevButton,
-        NextButton,
-        MapNative,
-        MapCurrent,
-        MapDisabled,
-        Count
-    };
-
-    inline std::array<RouletteDebugImageOverride, static_cast<std::size_t>(BattlegroundDebugImageSlot::Count)> g_battlegroundDebugImageOverrides;
 
     enum class CharacterDebugImageSlot : uint8_t
     {
@@ -676,11 +603,6 @@ namespace imgui_layer
     void draw_settings_button_overlay();
     void draw_npc_panel();
     void draw_npc_button_overlay();
-    void draw_battleground_layout_debug_panel();
-    std::string build_battleground_layout_dump();
-    LPDIRECT3DTEXTURE9 get_battleground_debug_override_texture(BattlegroundDebugImageSlot slot);
-    LPDIRECT3DTEXTURE9 get_battleground_debug_override_texture_for_path(const char* relativePath);
-    void release_battleground_map_textures();
 
     // imgui_layer_items.cpp
     int count_inventory_item(uint8_t type, uint8_t typeId);

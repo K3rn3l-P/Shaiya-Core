@@ -430,8 +430,6 @@ namespace debug_panel
 
         ImGui::Separator();
         ImGui::Checkbox("Roulette Layout Debug", &imgui_layer::g_showRouletteLayoutDebugPanel);
-        ImGui::SameLine();
-        ImGui::Checkbox("Battleground Layout Debug", &imgui_layer::g_showBattlegroundLayoutDebugPanel);
         ImGui::Checkbox("Character Visual Debug", &imgui_layer::g_showCharacterLayoutDebugPanel);
 
         ImGui::EndChild();
