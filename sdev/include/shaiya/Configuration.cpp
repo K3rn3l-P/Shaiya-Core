@@ -187,10 +187,8 @@ void Configuration::LoadBattlefieldMoveData()
                 continue;
 
             BattlefieldMoveInfo info{};
-            info.id = static_cast<int>(util::ini::get_value(section.c_str(), L"ID", num, path));
             info.levelMin = static_cast<int>(util::ini::get_value(section.c_str(), L"LEVEL_MIN", 0, path));
             info.levelMax = static_cast<int>(util::ini::get_value(section.c_str(), L"LEVEL_MAX", 0, path));
-            info.enabled = static_cast<int>(util::ini::get_value(section.c_str(), L"ENABLED", 1, path));
 
             auto readPos = [&](int index, const wchar_t* prefix)
                 {

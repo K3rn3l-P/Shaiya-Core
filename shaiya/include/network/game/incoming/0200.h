@@ -119,7 +119,6 @@ namespace shaiya
     struct GameMovePvPZoneIncoming
     {
         uint16_t opcode{ 0x233 };
-        uint8_t destinationId{ 0 };
     };
 #pragma pack(pop)
 }
