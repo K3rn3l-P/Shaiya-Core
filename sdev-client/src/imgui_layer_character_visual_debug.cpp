@@ -38,6 +38,7 @@ namespace imgui_layer
             case CharacterDebugImageSlot::HpBarBackground: return "HP Bar Background";
             case CharacterDebugImageSlot::HpBarFill: return "HP Bar Fill";
             case CharacterDebugImageSlot::HpBarBorder: return "HP Bar Border";
+            case CharacterDebugImageSlot::RankIcon: return "Rank Icon";
             default: return "Unknown";
             }
         }
@@ -203,6 +204,10 @@ namespace imgui_layer
             auto max = ImVec2(center.x + half.x, center.y + half.y);
             drawList->AddRect(min, max, color, 3.0f, 0, 1.4f);
         }
+
+        int s_effectId = 1;
+        int s_effectSub = 0;
+        int s_playMode = 0;
 
         bool is_absolute_windows_path(const std::string& path)
         {
@@ -481,7 +486,8 @@ namespace imgui_layer
         {
             if (!g_showCharacterLayoutDebugPanel)
                 return;
-            if (!g_characterLayoutDebug.drawGuides && !g_characterLayoutDebug.drawHpBar)
+            if (!g_characterLayoutDebug.drawGuides && !g_characterLayoutDebug.drawHpBar
+                && !g_characterLayoutDebug.drawRankGuide)
                 return;
             if (!is_anchor_valid())
                 return;
@@ -523,6 +529,27 @@ namespace imgui_layer
                 {
                     add_centered_rect(drawList, nameCenter, g_characterLayoutDebug.nameBoxSize, IM_COL32(155, 255, 140, 220));
                     drawList->AddText(ImVec2(nameCenter.x - 18.0f, nameCenter.y - g_characterLayoutDebug.nameBoxSize.y * 0.5f - 18.0f), IM_COL32(155, 255, 140, 255), "Name");
+                }
+            }
+
+            // Rank icon overlay — posizionato relativo all'anchor del nameplate
+            // (stesso sistema di title/name/hpbar). Usa "Rank Icon Offset" per allineare
+            // all'icona nativa: abilita Edit Rank, guarda dove compare l'icona e aggiusta.
+            {
+                auto rankOrigin = ImVec2(
+                    anchor.x + g_characterLayoutDebug.rankIconOffset.x,
+                    anchor.y + g_characterLayoutDebug.rankIconOffset.y);
+                auto rankMax = ImVec2(rankOrigin.x + g_characterLayoutDebug.rankIconSize.x,
+                                      rankOrigin.y + g_characterLayoutDebug.rankIconSize.y);
+
+                auto rankTexture = get_character_debug_override_texture(CharacterDebugImageSlot::RankIcon);
+                if (rankTexture)
+                    draw_texture_rect(drawList, rankTexture, rankOrigin, rankMax);
+
+                if (g_characterLayoutDebug.drawGuides && g_characterLayoutDebug.drawRankGuide)
+                {
+                    drawList->AddRect(rankOrigin, rankMax, IM_COL32(255, 200, 80, 200), 2.0f, 0, 1.2f);
+                    drawList->AddText(ImVec2(rankOrigin.x, rankOrigin.y - 18.0f), IM_COL32(255, 200, 80, 255), "Rank");
                 }
             }
 
@@ -675,35 +702,290 @@ namespace imgui_layer
             if (!ImGui::CollapsingHeader("Custom Effect"))
                 return;
 
-            static std::array<char, 128> s_effectName{};
-            static bool s_loop = false;
-            static int s_loopIntervalMs = 1200;
+            auto* user = get_local_user();
 
-            if (s_effectName[0] == '\0')
+            ImGui::TextDisabled("Play client-side effects by ID.");
+            ImGui::Spacing();
+
+            ImGui::SetNextItemWidth(120.0f);
+            ImGui::InputInt("Effect ID", &s_effectId, 1, 10);
+            s_effectId = std::max(0, s_effectId);
+
+            ImGui::SetNextItemWidth(120.0f);
+            ImGui::InputInt("Sub ID", &s_effectSub, 1, 5);
+            s_effectSub = std::max(0, s_effectSub);
+
+            ImGui::RadioButton("World position", &s_playMode, 0);
+            ImGui::SameLine();
+            ImGui::RadioButton("Attached to character", &s_playMode, 1);
+
+            ImGui::Spacing();
+
+            bool canPlay = user != nullptr;
+            ImGui::BeginDisabled(!canPlay);
+
+            if (ImGui::Button("Play effect##character_eft", ImVec2(140.0f, 28.0f)) && user)
             {
-                auto current = get_custom_eft_name_from_ui();
-                if (current && current[0])
-                    std::snprintf(s_effectName.data(), s_effectName.size(), "%s", current);
+                if (s_playMode == 1)
+                {
+                    CCharacter::RenderEffect(
+                        user, s_effectId, s_effectSub,
+                        0.0f,
+                        &user->pos, &user->dir, &user->up, 0);
+                }
+                else
+                {
+                    CWorldMgr::RenderEffect(
+                        s_effectId, s_effectSub,
+                        &user->pos, &user->dir, &user->up, 0);
+                }
             }
 
-            s_loop = is_custom_eft_loop_enabled_from_ui();
-            s_loopIntervalMs = static_cast<int>(get_custom_eft_loop_interval_from_ui());
-            s_loopIntervalMs = std::clamp(s_loopIntervalMs, 100, 10000);
+            ImGui::SameLine();
+            if (ImGui::Button("Clear effects##character_eft", ImVec2(140.0f, 28.0f)) && user)
+                CCharacter::ClearEffects(user);
+
+            ImGui::EndDisabled();
+
+            if (!canPlay)
+                ImGui::TextDisabled("Enter the game world first.");
+            else
+            {
+                ImGui::Spacing();
+                ImGui::TextDisabled("Pos: %.0f, %.0f, %.0f", user->pos.x, user->pos.y, user->pos.z);
+            }
+        }
+
+        void draw_pvp_grade_texture_section()
+        {
+            ImGui::SetNextItemOpen(false, ImGuiCond_Appearing);
+            if (!ImGui::CollapsingHeader("PVP Grade Texture"))
+                return;
+
+            static std::array<char, MAX_PATH> s_path{};
+            static std::array<char, 96>       s_filter{};
+            static std::string                s_status;
+            static LPDIRECT3DTEXTURE9         s_originalTex = nullptr;
+            static LPDIRECT3DTEXTURE9         s_customTex   = nullptr;
+
+            ImGui::TextDisabled("Sostituisce grade2.tga direttamente in memoria (CWorldMgr::pvpGradeImage).");
+            ImGui::TextDisabled("Sprite sheet: 64x512, 32 slot verticali da 16px ciascuno.");
+            ImGui::Spacing();
 
             ImGui::SetNextItemWidth(-1.0f);
-            ImGui::InputText("Effect File", s_effectName.data(), s_effectName.size());
-            ImGui::Checkbox("Loop", &s_loop);
-            ImGui::InputInt("Loop Interval (ms)", &s_loopIntervalMs, 100, 500);
-            s_loopIntervalMs = std::clamp(s_loopIntervalMs, 100, 10000);
+            ImGui::InputText("Path##pvpgrade", s_path.data(), s_path.size());
 
-            if (ImGui::Button("Play##character_eft"))
-                play_custom_eft_from_ui(s_effectName.data(), s_loop, static_cast<unsigned>(s_loopIntervalMs));
+            if (ImGui::TreeNode("Asset Browser##pvpgrade"))
+            {
+                draw_asset_image_browser("pvpgrade_browser", s_path.data(), s_path.size(),
+                                         s_filter.data(), s_filter.size(), 140.0f);
+                ImGui::TreePop();
+            }
+
+            bool inGame = g_pWorldMgr != nullptr;
+            ImGui::BeginDisabled(!inGame);
+
+            if (ImGui::Button("Apply##pvpgrade", ImVec2(140.0f, 0.0f)))
+            {
+                LPDIRECT3DTEXTURE9 newTex = nullptr;
+                auto normalizedPath = normalize_asset_browser_text(s_path.data());
+                auto fsPath = std::filesystem::path(normalizedPath);
+
+                // Tentativo 1: loader nativo del gioco (gestisce SAF, TGA e tutti i formati di gioco)
+                {
+                    std::string parentDir = fsPath.parent_path().string();
+                    std::string fileName  = fsPath.filename().string();
+
+                    // Prova lista path candidates: prima il path dato, poi fallback a data/interface
+                    const char* pathCandidates[] = {
+                        parentDir.empty() ? "data/interface" : parentDir.c_str(),
+                        "data/interface",
+                        "data",
+                    };
+                    for (auto* pathCandidate : pathCandidates)
+                    {
+                        if (newTex || fileName.empty()) break;
+                        CTexture tempTex{};
+                        CTexture::CreateFromFile(&tempTex, pathCandidate, fileName.c_str(), 0, 0);
+                        if (tempTex.texture)
+                        {
+                            newTex = tempTex.texture;
+                            tempTex.texture = nullptr;
+                        }
+                    }
+                }
+
+                // Tentativo 2: loader custom (PNG, DDS, GIF via stb_image)
+                if (!newTex)
+                {
+                    std::vector<char> fileData;
+                    std::string resolvedSource;
+                    if (read_asset_image_bytes(s_path.data(), fileData, &resolvedSource) && !fileData.empty())
+                    {
+                        auto device = g_device ? g_device : (g_var ? g_var->camera.device : nullptr);
+                        if (device)
+                        {
+                            auto ext = normalize_path_for_compare(fsPath.extension().string());
+                            newTex = (ext == ".dds")
+                                ? create_texture_from_dds_memory(device, fileData.data(), static_cast<UINT>(fileData.size()))
+                                : create_texture_from_image_memory(device, fileData.data(), static_cast<UINT>(fileData.size()));
+                        }
+                        else
+                        {
+                            s_status = "Device D3D9 non disponibile";
+                        }
+                    }
+                }
+
+                if (!newTex)
+                {
+                    if (s_status.empty())
+                        s_status = "File non trovato o formato non supportato";
+                }
+                else
+                {
+                    if (!s_originalTex)
+                        s_originalTex = g_pWorldMgr->pvpGradeImage.texture;
+                    if (s_customTex)
+                        s_customTex->Release();
+                    s_customTex = newTex;
+                    g_pWorldMgr->pvpGradeImage.texture = newTex;
+                    s_status = "Applicata";
+                }
+            }
+
             ImGui::SameLine();
-            if (ImGui::Button("Stop##character_eft"))
-                stop_custom_eft_from_ui();
 
-            auto current = get_custom_eft_name_from_ui();
-            ImGui::Text("Current: %s", current && current[0] ? current : "<none>");
+            ImGui::BeginDisabled(s_originalTex == nullptr);
+            if (ImGui::Button("Restore Original##pvpgrade", ImVec2(140.0f, 0.0f)))
+            {
+                if (s_originalTex && g_pWorldMgr)
+                {
+                    g_pWorldMgr->pvpGradeImage.texture = s_originalTex;
+                    s_originalTex = nullptr;
+                    if (s_customTex) { s_customTex->Release(); s_customTex = nullptr; }
+                    s_status = "Texture originale ripristinata";
+                }
+            }
+            ImGui::EndDisabled();
+
+            ImGui::EndDisabled(); // !inGame
+
+            if (!inGame)
+                ImGui::TextDisabled("Entra in gioco prima di applicare.");
+            else if (s_customTex)
+                ImGui::TextColored(ImVec4(0.3f, 1.0f, 0.3f, 1.0f), "Custom texture attiva");
+            else
+                ImGui::TextDisabled("Texture originale grade2.tga");
+
+            if (!s_status.empty())
+                ImGui::TextDisabled("Status: %s", s_status.c_str());
+
+            // Anteprima della texture corrente
+            if (inGame && g_pWorldMgr->pvpGradeImage.texture)
+            {
+                auto* tex = g_pWorldMgr->pvpGradeImage.texture;
+                D3DSURFACE_DESC desc{};
+                if (SUCCEEDED(tex->GetLevelDesc(0, &desc)) && desc.Width > 0 && desc.Height > 0)
+                {
+                    constexpr float kMaxH = 200.0f;
+                    const float scale = std::min(kMaxH / static_cast<float>(desc.Height), 1.0f);
+                    ImGui::TextDisabled("Preview (%ux%u):", desc.Width, desc.Height);
+                    ImGui::Image(reinterpret_cast<ImTextureID>(tex),
+                        ImVec2(static_cast<float>(desc.Width) * scale,
+                               static_cast<float>(desc.Height) * scale));
+                }
+            }
+        }
+
+        void draw_extended_rank_system_section()
+        {
+            ImGui::SetNextItemOpen(false, ImGuiCond_Appearing);
+            if (!ImGui::CollapsingHeader("Extended Rank System"))
+                return;
+
+            ImGui::TextDisabled("Texture 64x1024, 2 col x 16 righe, icone 32px. UV 1/32 auto.");
+            ImGui::TextDisabled("Top:  SX(0-15) + DX(16-30). Bottom: SX(31-46) + DX(47-61).");
+            ImGui::Spacing();
+            ImGui::Checkbox("Enable Extended Rank##extended", &g_extendedRankEnabled);
+            ImGui::Spacing();
+            ImGui::BeginDisabled(!g_extendedRankEnabled);
+
+            // Calcola logical corrente
+            int32_t curKills   = g_lastRenderedKills;
+            int32_t curLogical = 0;
+            for (int i = 61; i >= 0; i--)
+                if (curKills >= g_extendedThresholdTable[i]) { curLogical = i; break; }
+            ImGui::Text("kills: %d  ->  logical: %d  ucol: %s", curKills, curLogical,
+                g_extendedRankUCol ? "DX" : "SX");
+            ImGui::Spacing();
+
+            // Disegna una sezione della tabella con N voci a partire da 'start'
+            auto drawSection = [&](const char* id, int start, int count)
+            {
+                if (!ImGui::BeginTable(id, 4, ImGuiTableFlags_Borders | ImGuiTableFlags_SizingFixedFit))
+                    return;
+                ImGui::TableSetupColumn("L",    ImGuiTableColumnFlags_WidthFixed, 22.0f);
+                ImGui::TableSetupColumn("Kills",ImGuiTableColumnFlags_WidthFixed, 84.0f);
+                ImGui::TableSetupColumn("L",    ImGuiTableColumnFlags_WidthFixed, 22.0f);
+                ImGui::TableSetupColumn("Kills",ImGuiTableColumnFlags_WidthFixed, 84.0f);
+                ImGui::TableHeadersRow();
+                int rows = (count + 1) / 2;
+                for (int row = 0; row < rows; row++)
+                {
+                    ImGui::TableNextRow();
+                    for (int col = 0; col < 2; col++)
+                    {
+                        int idx = start + row + col * rows;
+                        if (idx >= start + count) continue;
+                        bool isCur = (idx == curLogical);
+                        ImGui::TableSetColumnIndex(col * 2);
+                        if (isCur) ImGui::TextColored(ImVec4(1,1,0,1), "%2d", idx);
+                        else       ImGui::Text("%2d", idx);
+                        ImGui::TableSetColumnIndex(col * 2 + 1);
+                        ImGui::PushID(idx);
+                        ImGui::SetNextItemWidth(80.0f);
+                        ImGui::InputInt("##t", &g_extendedThresholdTable[idx], 0, 0);
+                        if (g_extendedThresholdTable[idx] < 0) g_extendedThresholdTable[idx] = 0;
+                        ImGui::PopID();
+                    }
+                }
+                ImGui::EndTable();
+            };
+
+            ImGui::TextDisabled("Top SX (L0-15, col sinistra, row 0-15):");
+            drawSection("##tsl", 0, 16);
+            ImGui::TextDisabled("Top DX (L16-30, col destra, row 0-14):");
+            drawSection("##tdx", 16, 15);
+            ImGui::Spacing();
+            ImGui::TextDisabled("Bottom SX (L31-46, col sinistra, row 16-31):");
+            drawSection("##bsl", 31, 16);
+            ImGui::TextDisabled("Bottom DX (L47-61, col destra, row 16-30):");
+            drawSection("##bdx", 47, 15);
+            ImGui::EndDisabled();
+        }
+
+        void draw_edit_rank_section()
+        {
+            ImGui::SetNextItemOpen(false, ImGuiCond_Appearing);
+            if (!ImGui::CollapsingHeader("Edit Rank"))
+                return;
+
+            ImGui::TextDisabled("Forza il killLv del motore per mostrare il rank icon.");
+            ImGui::TextDisabled("Calibrazione: abilita override, poi usa 'Rank Icon Offset'");
+            ImGui::TextDisabled("in 'Overlay Layout' finche' la guida gialla si allinea all'icona.");
+            ImGui::Spacing();
+
+            ImGui::Checkbox("Override killLv##rank", &g_killLvOverrideEnabled);
+            ImGui::BeginDisabled(!g_killLvOverrideEnabled);
+            ImGui::SetNextItemWidth(160.0f);
+            ImGui::InputInt("killLv override##rank", &g_killLvOverrideValue, 100, 1000);
+            g_killLvOverrideValue = std::max(0, g_killLvOverrideValue);
+            ImGui::EndDisabled();
+
+            ImGui::Spacing();
+            ImGui::TextDisabled("La tabella soglie e' a 0x7AEE08 (31 rank, indice 0x00 - 0x1E).");
+            ImGui::TextDisabled("Hook: FUN_0044ebe0 @ 0x44EBF1 (8 bytes, detour su ECX).");
         }
 
         void draw_overlay_layout_section()
@@ -717,6 +999,7 @@ namespace imgui_layer
             ImGui::Checkbox("Draw Name Guide", &g_characterLayoutDebug.drawNameGuide);
             ImGui::Checkbox("Show HP Bar Overlay", &g_characterLayoutDebug.drawHpBar);
             ImGui::Checkbox("Show HP Text", &g_characterLayoutDebug.drawHpText);
+            ImGui::Checkbox("Draw Rank Guide", &g_characterLayoutDebug.drawRankGuide);
 
             input_vec2("Title Center Offset", g_characterLayoutDebug.titleCenterOffset);
             input_vec2("Title Box Size", g_characterLayoutDebug.titleBoxSize);
@@ -725,6 +1008,8 @@ namespace imgui_layer
             input_vec2("HP Bar Offset", g_characterLayoutDebug.hpBarOffset);
             input_vec2("HP Bar Size", g_characterLayoutDebug.hpBarSize);
             ImGui::InputFloat("HP Text Offset Y", &g_characterLayoutDebug.hpTextOffsetY, 1.0f, 5.0f, "%.1f");
+            input_vec2("Rank Icon Offset", g_characterLayoutDebug.rankIconOffset);
+            input_vec2("Rank Icon Size", g_characterLayoutDebug.rankIconSize);
 
             g_characterLayoutDebug.titleBoxSize.x = std::max(g_characterLayoutDebug.titleBoxSize.x, 8.0f);
             g_characterLayoutDebug.titleBoxSize.y = std::max(g_characterLayoutDebug.titleBoxSize.y, 8.0f);
@@ -732,6 +1017,8 @@ namespace imgui_layer
             g_characterLayoutDebug.nameBoxSize.y = std::max(g_characterLayoutDebug.nameBoxSize.y, 8.0f);
             g_characterLayoutDebug.hpBarSize.x = std::max(g_characterLayoutDebug.hpBarSize.x, 16.0f);
             g_characterLayoutDebug.hpBarSize.y = std::max(g_characterLayoutDebug.hpBarSize.y, 4.0f);
+            g_characterLayoutDebug.rankIconSize.x = std::max(g_characterLayoutDebug.rankIconSize.x, 8.0f);
+            g_characterLayoutDebug.rankIconSize.y = std::max(g_characterLayoutDebug.rankIconSize.y, 8.0f);
         }
     }
 
@@ -760,6 +1047,7 @@ namespace imgui_layer
             "drawNameGuide = %s\n"
             "drawHpBar = %s\n"
             "drawHpText = %s\n"
+            "drawRankGuide = %s\n"
             "titleCenterOffset = { %.1ff, %.1ff }\n"
             "titleBoxSize = { %.1ff, %.1ff }\n"
             "nameCenterOffset = { %.1ff, %.1ff }\n"
@@ -773,6 +1061,7 @@ namespace imgui_layer
             g_characterLayoutDebug.drawNameGuide ? "true" : "false",
             g_characterLayoutDebug.drawHpBar ? "true" : "false",
             g_characterLayoutDebug.drawHpText ? "true" : "false",
+            g_characterLayoutDebug.drawRankGuide ? "true" : "false",
             g_characterLayoutDebug.titleCenterOffset.x,
             g_characterLayoutDebug.titleCenterOffset.y,
             g_characterLayoutDebug.titleBoxSize.x,
@@ -796,11 +1085,16 @@ namespace imgui_layer
         dump += std::string("wings = ") + (g_showWings ? "true" : "false") + "\n";
         dump += std::string("costumes = ") + (g_showCostumes ? "true" : "false") + "\n";
 
-        auto currentEffect = get_custom_eft_name_from_ui();
         dump += "\nCustom Effect:\n";
-        dump += std::string("file = \"") + (currentEffect ? currentEffect : "") + "\"\n";
-        dump += std::string("loop = ") + (is_custom_eft_loop_enabled_from_ui() ? "true" : "false") + "\n";
-        dump += "loopIntervalMs = " + std::to_string(get_custom_eft_loop_interval_from_ui()) + "\n";
+        dump += "effectId = " + std::to_string(s_effectId) + "\n";
+        dump += "effectSub = " + std::to_string(s_effectSub) + "\n";
+        dump += std::string("playMode = ") + (s_playMode == 1 ? "attached" : "world") + "\n";
+
+        dump += "\nEdit Rank:\n";
+        dump += std::string("killLvOverride = ") + (g_killLvOverrideEnabled ? "true" : "false") + "\n";
+        dump += "killLvValue = " + std::to_string(g_killLvOverrideValue) + "\n";
+        dump += "rankIconOffset = { " + std::to_string(g_characterLayoutDebug.rankIconOffset.x) + "f, " + std::to_string(g_characterLayoutDebug.rankIconOffset.y) + "f }\n";
+        dump += "rankIconSize = { " + std::to_string(g_characterLayoutDebug.rankIconSize.x) + "f, " + std::to_string(g_characterLayoutDebug.rankIconSize.y) + "f }\n";
 
         dump += "\nDebug Images:\n";
         for (std::size_t i = 0; i < static_cast<std::size_t>(CharacterDebugImageSlot::Count); ++i)
@@ -850,6 +1144,9 @@ namespace imgui_layer
         draw_visual_toggles_section();
         draw_title_section(user);
         draw_custom_effect_section();
+        draw_pvp_grade_texture_section();
+        draw_extended_rank_system_section();
+        draw_edit_rank_section();
         draw_overlay_layout_section();
         draw_character_debug_images_controls();
 
