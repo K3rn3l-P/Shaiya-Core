@@ -580,6 +580,7 @@ namespace imgui_layer
         release_texture(g_settingsIconTexture, g_settingsIconLoadAttempted);
         release_texture(g_npcIconTexture, g_npcIconLoadAttempted);
         release_texture(g_teleportIconTexture, g_teleportIconLoadAttempted);
+        rank_icon::on_device_reset();
     }
 
     void init_game_imgui(IDirect3DDevice9* device)
@@ -752,6 +753,7 @@ namespace imgui_layer
         load_settings_icon_texture();
         load_npc_icon_texture();
         load_teleport_icon_texture();
+        rank_icon::tick();
 
         // When the native UI is hidden (F11), suppress all overlay drawing
         // so our elements disappear in sync with the game's own UI.

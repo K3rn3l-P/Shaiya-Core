@@ -456,31 +456,8 @@ namespace imgui_layer
     inline bool    g_killLvOverrideEnabled = false;
     inline int32_t g_killLvOverrideValue   = 0;
 
-    // Extended rank icon system (64x1024, icone 32px)
-    // UV 1/32: 32 slot da 32px in 1024px. Texture 2 colonne x 16 righe.
-    // Mapping 62 logical icons (0-61):
-    //   logical  0-15 → top half,    colonna SX (U=0.0, row 0-15)  = 16 icone
-    //   logical 16-30 → top half,    colonna DX (U=0.5, row 0-14)  = 15 icone
-    //   logical 31-46 → bottom half, colonna SX (U=0.0, row 16-31) = 16 icone
-    //   logical 47-61 → bottom half, colonna DX (U=0.5, row 16-30) = 15 icone
-    // compute_extended_rank_icon ritorna uvRow e scrive g_extendedRankUCol.
-    inline int32_t g_lastRenderedKills  = 0;
-    inline bool    g_extendedRankEnabled = false;
-    inline int32_t g_extendedRankUCol   = 0; // 0=sinistra(0.0f), 1=destra(0.5f)
-    inline std::array<int32_t, 62> g_extendedThresholdTable = {
-        // Logical 0-15: top SX (kills 0-200000, soglie native rank 0-15)
-        0, 50, 300, 1000, 5000, 10000, 20000, 30000,
-        40000, 50000, 70000, 90000, 110000, 130000, 150000, 200000,
-        // Logical 16-30: top DX (kills 250000-1000000, soglie native rank 16-30)
-        250000, 300000, 350000, 400000, 450000, 500000,
-        550000, 600000, 650000, 700000, 750000, 800000, 850000, 900000, 1000000,
-        // Logical 31-46: bottom SX (kills >1M, server esteso)
-        1100000, 1200000, 1400000, 1600000, 1800000, 2000000,
-        2200000, 2400000, 2600000, 2800000, 3000000, 3200000, 3400000, 3600000, 3800000, 4000000,
-        // Logical 47-61: bottom DX (kills >4M)
-        4500000, 5000000, 5500000, 6000000, 6500000, 7000000,
-        7500000, 8000000, 8500000, 9000000, 9500000, 10000000, 11000000, 12000000, 13000000
-    };
+    // Stato rank icon — owned da rank_icon.cpp/rank_icon.h.
+    // Accessibile tramite #include "rank_icon.h".
 
     // -----------------------------------------------------------------------
     //  Shared types
@@ -750,4 +727,13 @@ namespace imgui_layer
     void sync_emoji_overlay_scene_state();
     void clear_emoji_text_overlays();
     void handle_emoji_button_interaction();
+}
+
+// rank_icon.cpp — auto-init extended rank system
+namespace rank_icon
+{
+    void tick();            // chiamato ogni frame dalla render path icone
+    void disable();         // disabilita + ripristina texture originale
+    void force_reload();    // dev: forza ricaricamento da disco
+    void on_device_reset(); // chiamato su D3D9 reset
 }

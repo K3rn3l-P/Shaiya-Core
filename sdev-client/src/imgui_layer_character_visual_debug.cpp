@@ -1,4 +1,5 @@
 #include "include/imgui_layer_internal.h"
+#include "include/rank_icon.h"
 #include "include/shaiya/CDataFile.h"
 #include "include/shaiya/ItemInfo.h"
 #include <filesystem>
@@ -907,20 +908,39 @@ namespace imgui_layer
             ImGui::TextDisabled("Texture 64x1024, 2 col x 16 righe, icone 32px. UV 1/32 auto.");
             ImGui::TextDisabled("Top:  SX(0-15) + DX(16-30). Bottom: SX(31-46) + DX(47-61).");
             ImGui::Spacing();
-            ImGui::Checkbox("Enable Extended Rank##extended", &g_extendedRankEnabled);
-            ImGui::Spacing();
-            ImGui::BeginDisabled(!g_extendedRankEnabled);
 
-            // Calcola logical corrente
-            int32_t curKills   = g_lastRenderedKills;
+            // Stato auto-gestito da rank_icon::tick() nel render loop — pannello solo lettura.
+            bool extEnabled = (rank_icon::g_enabled != 0);
+            if (extEnabled)
+                ImGui::TextColored(ImVec4(0.2f, 1.0f, 0.2f, 1.0f), "ATTIVO");
+            else
+                ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "INATTIVO  (grade2_extended.png non trovato?)");
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Force Reload"))
+                rank_icon::force_reload();
+            ImGui::Spacing();
+
+            int32_t curKills   = rank_icon::g_last_kills;
             int32_t curLogical = 0;
             for (int i = 61; i >= 0; i--)
-                if (curKills >= g_extendedThresholdTable[i]) { curLogical = i; break; }
+                if (curKills >= rank_icon::g_thresholds[i]) { curLogical = i; break; }
             ImGui::Text("kills: %d  ->  logical: %d  ucol: %s", curKills, curLogical,
-                g_extendedRankUCol ? "DX" : "SX");
+                rank_icon::g_u_col ? "DX" : "SX");
+            ImGui::Spacing();
+            ImGui::TextDisabled("Soglie kills (modificabili — click indice per /set in chat):");
             ImGui::Spacing();
 
-            // Disegna una sezione della tabella con N voci a partire da 'start'
+            // Invia /set {nome} kill {valore} nella chat del gioco.
+            auto send_set_kills = [](int32_t kills) {
+                const char* name = reinterpret_cast<const char*>(0x09144CE);
+                if (!name || IsBadReadPtr(name, 1) || name[0] == '\0') return;
+                char cmd[128];
+                snprintf(cmd, sizeof(cmd), "/set %s kill %d", name, kills);
+                ensure_client_sysmsg_dispatch_ready();
+                SendMessageA(g_var->hwnd, kClientGMCommandWindowMessage, 0,
+                    reinterpret_cast<LPARAM>(cmd));
+            };
+
             auto drawSection = [&](const char* id, int start, int count)
             {
                 if (!ImGui::BeginTable(id, 4, ImGuiTableFlags_Borders | ImGuiTableFlags_SizingFixedFit))
@@ -940,13 +960,18 @@ namespace imgui_layer
                         if (idx >= start + count) continue;
                         bool isCur = (idx == curLogical);
                         ImGui::TableSetColumnIndex(col * 2);
-                        if (isCur) ImGui::TextColored(ImVec4(1,1,0,1), "%2d", idx);
-                        else       ImGui::Text("%2d", idx);
-                        ImGui::TableSetColumnIndex(col * 2 + 1);
                         ImGui::PushID(idx);
+                        if (isCur) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.6f, 0.5f, 0.0f, 1.0f));
+                        char label[8]; snprintf(label, sizeof(label), "%2d", idx);
+                        if (ImGui::SmallButton(label))
+                            send_set_kills(rank_icon::g_thresholds[idx]);
+                        if (isCur) ImGui::PopStyleColor();
+                        if (ImGui::IsItemHovered())
+                            ImGui::SetTooltip("/set <nome> kill %d", rank_icon::g_thresholds[idx]);
+                        ImGui::TableSetColumnIndex(col * 2 + 1);
                         ImGui::SetNextItemWidth(80.0f);
-                        ImGui::InputInt("##t", &g_extendedThresholdTable[idx], 0, 0);
-                        if (g_extendedThresholdTable[idx] < 0) g_extendedThresholdTable[idx] = 0;
+                        ImGui::InputInt("##t", &rank_icon::g_thresholds[idx], 0, 0);
+                        if (rank_icon::g_thresholds[idx] < 0) rank_icon::g_thresholds[idx] = 0;
                         ImGui::PopID();
                     }
                 }
@@ -962,7 +987,6 @@ namespace imgui_layer
             drawSection("##bsl", 31, 16);
             ImGui::TextDisabled("Bottom DX (L47-61, col destra, row 16-30):");
             drawSection("##bdx", 47, 15);
-            ImGui::EndDisabled();
         }
 
         void draw_edit_rank_section()

@@ -168,6 +168,7 @@
     <ClCompile Include="src\server_selection.cpp" />
     <ClCompile Include="src\target_view.cpp" />
     <ClCompile Include="src\title.cpp" />
+    <ClCompile Include="src\rank_icon.cpp" />
     <ClCompile Include="src\ui_image.cpp" />
     <ClCompile Include="src\unicode.cpp" />
     <ClCompile Include="src\debug_panel.cpp" />
@@ -262,7 +263,7 @@
       <LanguageStandard>stdcpplatest</LanguageStandard>
       <LanguageStandard_C>stdclatest</LanguageStandard_C>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
-      <AdditionalIncludeDirectories>C:\Program Files (x86)\Microsoft DirectX SDK (June 2010)\Include;$(SolutionDir);$(ProjectDir);$(SolutionDir)external\imgui;$(SolutionDir)external\imgui\backends;$(SolutionDir)external\discord-rpc\include;$(SolutionDir)external\discord-rpc\src;</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(SolutionDir)packages\Microsoft.DXSDK.D3DX.9.29.952.8\build\native\include;$(SolutionDir);$(ProjectDir);$(SolutionDir)external\imgui;$(SolutionDir)external\imgui\backends;$(SolutionDir)external\discord-rpc\include;$(SolutionDir)external\discord-rpc\src</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>

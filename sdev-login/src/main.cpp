@@ -1,9 +1,12 @@
 #include <array>
 #include <cstring>
+#include <cstdio>
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <bcrypt.h>
 #include <sql.h>
 #include <sqlext.h>
+#pragma comment(lib, "bcrypt.lib")
 #include <util/util.h>
 #include "include/main.h"
 #include "include/shaiya/SDatabase.h"
@@ -236,7 +239,145 @@ namespace
 
         return isAdmin;
     }
-}
+
+    // --- PBKDF2 helpers ---
+
+    // Decodes a hex string of exactly hex_len chars into out (out_len bytes).
+    bool hex_decode(const char* hex, size_t hex_len, unsigned char* out, size_t out_len)
+    {
+        if (hex_len != out_len * 2)
+            return false;
+
+        auto from_hex = [](unsigned char c) -> int {
+            if (c >= '0' && c <= '9') return c - '0';
+            if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+            if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+            return -1;
+        };
+
+        for (size_t i = 0; i < out_len; i++)
+        {
+            int hi = from_hex(static_cast<unsigned char>(hex[i * 2]));
+            int lo = from_hex(static_cast<unsigned char>(hex[i * 2 + 1]));
+            if (hi < 0 || lo < 0)
+                return false;
+            out[i] = static_cast<unsigned char>((hi << 4) | lo);
+        }
+        return true;
+    }
+
+    // Queries Enpassword for @username into out[out_size].
+    // Returns true on success (SQL NULL → out[0]=='\0'). Returns false on DB error.
+    bool get_enpassword(SDatabase* db, const char* username, char* out, int out_size)
+    {
+        const char* query =
+            "SELECT TOP 1 Enpassword "
+            "FROM [PS_UserData].[dbo].[Users_Master] "
+            "WHERE UserID = ?";
+
+        if (SDatabase::PrepareSql(db, query))
+            return false;
+
+        char user[kMaxUsernameLen + 1]{};
+        strncpy_s(user, username, kMaxUsernameLen);
+
+        if (SDatabase::BindParameter(db, 1, kMaxUsernameLen,
+                SQL_C_CHAR, SQL_VARCHAR, user, nullptr, SQL_PARAM_INPUT))
+        {
+            SQLFreeStmt(db->stmt, SQL_CLOSE);
+            SQLFreeStmt(db->stmt, SQL_RESET_PARAMS);
+            return false;
+        }
+
+        if (SDatabase::ExecuteSql(db))
+        {
+            SQLFreeStmt(db->stmt, SQL_CLOSE);
+            SQLFreeStmt(db->stmt, SQL_RESET_PARAMS);
+            return false;
+        }
+
+        out[0] = '\0';
+        SQLRETURN rc = SQLFetch(db->stmt);
+        if (rc == SQL_SUCCESS || rc == SQL_SUCCESS_WITH_INFO)
+        {
+            SQLLEN indicator = 0;
+            SQLGetData(db->stmt, 1, SQL_C_CHAR, out, out_size, &indicator);
+            if (indicator == SQL_NULL_DATA)
+                out[0] = '\0';
+        }
+
+        SQLFreeStmt(db->stmt, SQL_CLOSE);
+        SQLFreeStmt(db->stmt, SQL_RESET_PARAMS);
+        return true;
+    }
+
+    // Verifies a PBKDF2-SHA256 stored hash against a plaintext password.
+    // Format: "pbkdf2sha256:<iterations>:<32hex_salt>:<64hex_hash>"
+    // Uses Windows CNG (bcrypt.lib) — zero external dependencies.
+    bool verify_pbkdf2(const char* stored, const char* password)
+    {
+        constexpr const char* kPrefix    = "pbkdf2sha256:";
+        constexpr size_t      kPrefixLen = 13;
+        constexpr size_t      kSaltBytes = 16;
+        constexpr size_t      kHashBytes = 32;
+
+        if (!stored || std::strncmp(stored, kPrefix, kPrefixLen) != 0)
+            return false;
+
+        const char* p = stored + kPrefixLen;
+
+        char* end = nullptr;
+        unsigned long iterations = std::strtoul(p, &end, 10);
+        if (!end || *end != ':' || iterations == 0 || iterations > 2000000UL)
+            return false;
+        p = end + 1;
+
+        const char* colon = std::strchr(p, ':');
+        if (!colon || static_cast<size_t>(colon - p) != kSaltBytes * 2)
+            return false;
+
+        unsigned char salt[kSaltBytes]{};
+        if (!hex_decode(p, kSaltBytes * 2, salt, kSaltBytes))
+            return false;
+        p = colon + 1;
+
+        if (std::strlen(p) != kHashBytes * 2)
+            return false;
+
+        unsigned char expected[kHashBytes]{};
+        if (!hex_decode(p, kHashBytes * 2, expected, kHashBytes))
+            return false;
+
+        BCRYPT_ALG_HANDLE hAlg = nullptr;
+        NTSTATUS status = BCryptOpenAlgorithmProvider(
+            &hAlg, BCRYPT_SHA256_ALGORITHM, nullptr, BCRYPT_ALG_HANDLE_HMAC_FLAG);
+        if (!BCRYPT_SUCCESS(status))
+            return false;
+
+        unsigned char computed[kHashBytes]{};
+        status = BCryptDeriveKeyPBKDF2(
+            hAlg,
+            reinterpret_cast<PUCHAR>(const_cast<char*>(password)),
+            static_cast<ULONG>(std::strlen(password)),
+            salt, static_cast<ULONG>(kSaltBytes),
+            static_cast<ULONGLONG>(iterations),
+            computed, static_cast<ULONG>(kHashBytes),
+            0);
+
+        BCryptCloseAlgorithmProvider(hAlg, 0);
+
+        if (!BCRYPT_SUCCESS(status))
+            return false;
+
+        // Timing-safe compare
+        volatile int diff = 0;
+        for (size_t i = 0; i < kHashBytes; i++)
+            diff |= computed[i] ^ expected[i];
+
+        return diff == 0;
+    }
+
+} // anonymous namespace
 
 // ===========================================================================
 // Login hook
@@ -267,19 +408,30 @@ short hook_0x406A8C(SDatabase* db, char* username, char* password, unsigned lowP
     // Authorized GM (+1) or normal user (0, not admin) — proceed.
 
     ULARGE_INTEGER sessionId{ lowPart, highPart };
-
     std::array<char, 1024> buffer{};
-    std::snprintf(buffer.data(), buffer.size(), "EXEC [PS_UserData].[dbo].[usp_Try_GameLogin_Taiwan] ?,?,%llu,'%s';",
-        sessionId.QuadPart, ipv4);
+
+    // PBKDF2 path: accounts registered via web have Enpassword set.
+    // Verify the hash in C++ (Windows CNG), then call a dedicated SP that
+    // handles rate-limiting and account-status checks without re-verifying.
+    char enpassword[256]{};
+    get_enpassword(db, username, enpassword, sizeof(enpassword));
+
+    // Accounts without Enpassword have not completed web registration — block login.
+    if (enpassword[0] == '\0')
+        return -1;
+
+    // PBKDF2-SHA256 verify (timing-safe, Windows CNG, no external lib).
+    int argonResult = verify_pbkdf2(enpassword, password) ? 1 : 0;
+
+    std::snprintf(buffer.data(), buffer.size(),
+        "EXEC [PS_UserData].[dbo].[usp_Try_GameLogin_Taiwan]"
+        " @UserID=?, @InPassword='', @SessionID=%llu, @UserIP='%s', @ArgonResult=%d;",
+        sessionId.QuadPart, ipv4, argonResult);
 
     if (SDatabase::PrepareSql(db, buffer.data()))
         return -1;
 
-    short result = 0;
-    result = SDatabase::BindParameter(db, 1, 32, SQL_C_CHAR, SQL_VARCHAR, username, nullptr, SQL_PARAM_INPUT);
-    result = SDatabase::BindParameter(db, 2, 32, SQL_C_CHAR, SQL_VARCHAR, password, nullptr, SQL_PARAM_INPUT);
-
-    if (result)
+    if (SDatabase::BindParameter(db, 1, 32, SQL_C_CHAR, SQL_VARCHAR, username, nullptr, SQL_PARAM_INPUT))
         return -1;
 
     return SDatabase::ExecuteSql(db);

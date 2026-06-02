@@ -7,13 +7,29 @@ pannelli debug e funzionalità custom al client Shaiya EP6.
 
 ## MCP GhidraAssist — Regola Fondamentale
 
-**Richiedere sempre all'utente di aprire Ghidra con `game.exe` caricato e lasciarlo in background prima di cercare nuovi hook o indirizzi.**
+**Istanza unica `127.0.0.1:8080` gestisce tutti i binari. Richiedere all'utente di aprire Ghidra con i binari necessari e lasciarli in background.**
 
-Verificare il binario attivo:
 ```
-mcp__ghidrassistmcp__list_binaries
-mcp__ghidrassistmcp__get_current_address
+mcp__ghidrassistmcp__list_binaries              → vedi tutti i binari aperti
+mcp__ghidrassistmcp__get_binary_info program_name="game.exe"
 ```
+
+### Binari in questo progetto
+
+| `program_name` | Lato | Progetto | Note |
+|---|---|---|---|
+| `game.exe` | **CLIENT** | `sdev-client` | Hook, ImGui overlay — questo progetto |
+| `ps_game.exe` | **SERVER** | `sdev.dll` | Server di gioco principale |
+| `ps_login.exe` | **SERVER** | `sdev-login.dll` | Login / autenticazione |
+| `ps_dbAgent.exe` | **SERVER** | `sdev-db.dll` | Database agent |
+| `ps_session.exe` | **SERVER** | — | Gestione sessioni |
+| `ps_gameLog.exe` | **SERVER** | — | Logging partite |
+| `ps_userLog.exe` | **SERVER** | — | Logging utenti |
+
+**Usare sempre `program_name` esplicito** — non dipendere dalla finestra attiva in Ghidra.
+
+Lavoro su `sdev-client` (hooks, overlay) → `program_name="game.exe"`
+Lavoro su comunicazione server/client → `program_name="ps_game.exe"` o altro ps_*
 
 ### Workflow per trovare un nuovo hook
 

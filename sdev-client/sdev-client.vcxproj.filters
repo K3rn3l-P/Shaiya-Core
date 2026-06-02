@@ -212,9 +212,6 @@
     <ClInclude Include="src\include\debug_panel.h">
       <Filter>include</Filter>
     </ClInclude>
-    <ClInclude Include="src\include\ep4_ui.h">
-      <Filter>include</Filter>
-    </ClInclude>
     <ClInclude Include="src\include\stat_color.h">
       <Filter>include</Filter>
     </ClInclude>
@@ -270,6 +267,9 @@
       <Filter>include</Filter>
     </ClInclude>
     <ClInclude Include="include\shaiya\ProductInfo.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="src\include\interface_hooks.h">
       <Filter>include</Filter>
     </ClInclude>
   </ItemGroup>
@@ -503,6 +503,12 @@
       <Filter>src</Filter>
     </ClCompile>
     <ClCompile Include="src\imgui_layer_asset_browser.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\interface_hooks.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\rank_icon.cpp">
       <Filter>src</Filter>
     </ClCompile>
   </ItemGroup>
