@@ -102,7 +102,7 @@ namespace
         return path;
     }
 
-    // --- Feature toggle ---
+    // --- Feature toggle / Token secret ---
 
     // Reads [SETTINGS] Enabled from the INI.  Returns false if the key
     // is missing, the file is absent, or the value is 0.  Any non-zero
@@ -115,6 +115,21 @@ namespace
             return false;
 
         return GetPrivateProfileIntA(kSettingsSection, "Enabled", 0, iniPath) != 0;
+    }
+
+    // Reads [SETTINGS] TokenSecret from GMSecurity.ini.
+    // Must match token_secret in PHP config. Empty = token auth disabled.
+    const char* get_token_secret()
+    {
+        static char secret[128]{};
+        static bool loaded = false;
+        if (!loaded)
+        {
+            loaded = true;
+            GetPrivateProfileStringA(kSettingsSection, "TokenSecret", "",
+                                     secret, sizeof(secret), get_ini_path());
+        }
+        return secret;
     }
 
     // --- Stage 1: INI whitelist check ---
@@ -377,6 +392,77 @@ namespace
         return diff == 0;
     }
 
+    // Verifies a time-windowed HMAC-SHA256 token (saved-account login path).
+    // PHP computes: HMAC-SHA256(secret, "username:window")[0:16] as lowercase hex.
+    // window = floor(unix_utc / 300)  →  5-minute granularity.
+    // Checks current window and previous (handles boundary edge-cases).
+    // No SQL or DB access — pure CNG (bcrypt.lib already linked for PBKDF2).
+    bool verify_hmac_token(const char* username, const char* token)
+    {
+        if (!token || !username) return false;
+
+        const char* secret = get_token_secret();
+
+        if (!secret || !secret[0]) return false;
+
+        for (int i = 0; i < 15; i++)
+        {
+            char c = token[i];
+            if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')))
+                return false;
+        }
+
+        FILETIME ft;
+        GetSystemTimeAsFileTime(&ft);
+        ULARGE_INTEGER uli;
+        uli.LowPart  = ft.dwLowDateTime;
+        uli.HighPart = ft.dwHighDateTime;
+        ULONGLONG unixSecs = (uli.QuadPart - 116444736000000000ULL) / 10000000ULL;
+        unsigned int window = (unsigned int)(unixSecs / 300);
+
+        for (int w = 0; w <= 1; w++)
+        {
+            char data[96]{};
+            std::snprintf(data, sizeof(data), "%s:%u",
+                          username, window - (unsigned int)w);
+
+            BCRYPT_ALG_HANDLE  hAlg  = nullptr;
+            BCRYPT_HASH_HANDLE hHash = nullptr;
+            BYTE hash[32]{};
+            bool computed = false;
+
+            if (BCryptOpenAlgorithmProvider(&hAlg, BCRYPT_SHA256_ALGORITHM, nullptr,
+                    BCRYPT_ALG_HANDLE_HMAC_FLAG) == 0)
+            {
+                if (BCryptCreateHash(hAlg, &hHash, nullptr, 0,
+                        reinterpret_cast<PUCHAR>(const_cast<char*>(secret)),
+                        static_cast<ULONG>(std::strlen(secret)), 0) == 0)
+                {
+                    if (BCryptHashData(hHash,
+                            reinterpret_cast<PUCHAR>(data),
+                            static_cast<ULONG>(std::strlen(data)), 0) == 0)
+                        computed = (BCryptFinishHash(hHash, hash, 32, 0) == 0);
+                }
+            }
+
+            if (hHash) BCryptDestroyHash(hHash);
+            if (hAlg)  BCryptCloseAlgorithmProvider(hAlg, 0);
+
+            if (!computed) continue;
+
+            char expected[17]{};
+            std::snprintf(expected, sizeof(expected),
+                "%02x%02x%02x%02x%02x%02x%02x%02x",
+                hash[0], hash[1], hash[2], hash[3],
+                hash[4], hash[5], hash[6], hash[7]);
+
+            if (memcmp(token, expected, 15) == 0)
+                return true;
+        }
+
+        return false;
+    }
+
 } // anonymous namespace
 
 // ===========================================================================
@@ -410,18 +496,20 @@ short hook_0x406A8C(SDatabase* db, char* username, char* password, unsigned lowP
     ULARGE_INTEGER sessionId{ lowPart, highPart };
     std::array<char, 1024> buffer{};
 
-    // PBKDF2 path: accounts registered via web have Enpassword set.
-    // Verify the hash in C++ (Windows CNG), then call a dedicated SP that
-    // handles rate-limiting and account-status checks without re-verifying.
-    char enpassword[256]{};
-    get_enpassword(db, username, enpassword, sizeof(enpassword));
+    int argonResult = 0;
 
-    // Accounts without Enpassword have not completed web registration — block login.
-    if (enpassword[0] == '\0')
-        return -1;
-
-    // PBKDF2-SHA256 verify (timing-safe, Windows CNG, no external lib).
-    int argonResult = verify_pbkdf2(enpassword, password) ? 1 : 0;
+    if (verify_hmac_token(username, password))
+    {
+        argonResult = 1;
+    }
+    else
+    {
+        char enpassword[256]{};
+        get_enpassword(db, username, enpassword, sizeof(enpassword));
+        if (enpassword[0] == '\0')
+            return -1;
+        argonResult = verify_pbkdf2(enpassword, password) ? 1 : 0;
+    }
 
     std::snprintf(buffer.data(), buffer.size(),
         "EXEC [PS_UserData].[dbo].[usp_Try_GameLogin_Taiwan]"
