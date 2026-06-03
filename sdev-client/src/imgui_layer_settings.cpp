@@ -343,28 +343,33 @@ namespace imgui_layer {
 
         ImGui::SetNextWindowPos(g_settingsPanelPosition, ImGuiCond_Appearing);
         ImGui::SetNextWindowSize(kSettingsPanelSize, ImGuiCond_Always);
-        ImGui::SetNextWindowBgAlpha(0.94f);
+        ImGui::SetNextWindowBgAlpha(g_windowBgTexture ? 0.0f : 0.94f);
 
-        bool panelOpen = g_showSettingsPanel;
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(14.0f, 14.0f));
         if (ImGui::Begin(
-            "Quick Settings",
-                &panelOpen,
-                ImGuiWindowFlags_NoCollapse
+            "##settings_panel",
+            nullptr,
+            ImGuiWindowFlags_NoTitleBar
                 | ImGuiWindowFlags_NoResize
                 | ImGuiWindowFlags_NoSavedSettings
                 | ImGuiWindowFlags_NoFocusOnAppearing
                 | ImGuiWindowFlags_NoBringToFrontOnFocus))
-            {
-                draw_window_background();
-                auto pos = ImGui::GetWindowPos();
-                auto size = ImGui::GetWindowSize();
-                remember_rect(g_settingsPanelRect, pos, ImVec2(pos.x + size.x, pos.y + size.y));
+        {
+            draw_window_background();
+            auto pos = ImGui::GetWindowPos();
+            auto size = ImGui::GetWindowSize();
+            remember_rect(g_settingsPanelRect, pos, ImVec2(pos.x + size.x, pos.y + size.y));
             if (std::fabs(pos.x - g_settingsPanelPosition.x) >= 0.5f
                 || std::fabs(pos.y - g_settingsPanelPosition.y) >= 0.5f)
             {
                 g_settingsPanelPosition = pos;
                 mark_imgui_settings_dirty();
             }
+
+            bool panelOpen = g_showSettingsPanel;
+            draw_panel_title_with_close("Quick Settings", panelOpen);
+            if (!panelOpen)
+                g_showSettingsPanel = false;
 
             ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(6.0f, 6.0f));
             draw_settings_toggle_row("Wings", g_showWings != 0, "/wings on", "/wings off");
@@ -377,8 +382,7 @@ namespace imgui_layer {
             ImGui::PopStyleVar();
         }
         ImGui::End();
-
-        g_showSettingsPanel = panelOpen;
+        ImGui::PopStyleVar();
     }
 
     void draw_settings_button_overlay()
@@ -508,28 +512,33 @@ namespace imgui_layer {
 
         ImGui::SetNextWindowPos(g_npcPanelPosition, ImGuiCond_Appearing);
         ImGui::SetNextWindowSize(kNpcPanelSize, ImGuiCond_Always);
-        ImGui::SetNextWindowBgAlpha(0.94f);
+        ImGui::SetNextWindowBgAlpha(g_windowBgTexture ? 0.0f : 0.94f);
 
-        bool panelOpen = g_showNpcPanel;
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(14.0f, 14.0f));
         if (ImGui::Begin(
-            "Remote NPC",
-                &panelOpen,
-                ImGuiWindowFlags_NoCollapse
+            "##npc_panel",
+            nullptr,
+            ImGuiWindowFlags_NoTitleBar
                 | ImGuiWindowFlags_NoResize
                 | ImGuiWindowFlags_NoSavedSettings
                 | ImGuiWindowFlags_NoFocusOnAppearing
                 | ImGuiWindowFlags_NoBringToFrontOnFocus))
-            {
-                draw_window_background();
-                auto pos = ImGui::GetWindowPos();
-                auto size = ImGui::GetWindowSize();
-                remember_rect(g_npcPanelRect, pos, ImVec2(pos.x + size.x, pos.y + size.y));
+        {
+            draw_window_background();
+            auto pos = ImGui::GetWindowPos();
+            auto size = ImGui::GetWindowSize();
+            remember_rect(g_npcPanelRect, pos, ImVec2(pos.x + size.x, pos.y + size.y));
             if (std::fabs(pos.x - g_npcPanelPosition.x) >= 0.5f
                 || std::fabs(pos.y - g_npcPanelPosition.y) >= 0.5f)
             {
                 g_npcPanelPosition = pos;
                 mark_imgui_settings_dirty();
             }
+
+            bool panelOpen = g_showNpcPanel;
+            draw_panel_title_with_close("Remote NPC", panelOpen);
+            if (!panelOpen)
+                g_showNpcPanel = false;
 
             ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(6.0f, 7.0f));
             draw_npc_panel_button("Market", 0);
@@ -541,8 +550,7 @@ namespace imgui_layer {
             ImGui::PopStyleVar();
         }
         ImGui::End();
-
-        g_showNpcPanel = panelOpen;
+        ImGui::PopStyleVar();
     }
 
     void draw_npc_button_overlay()
