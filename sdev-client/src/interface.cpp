@@ -512,6 +512,13 @@ void interface_patches::install_common()
     // Clock X offset — EP6/EP7 need it further left to fit the wider date format
     uint8_t clockXOffset = config::ui_needs_layout_patches() ? 0x0E : 0x05;
     util::write_memory((void*)0x4E129B, clockXOffset, 1);
+    // PvP rank icon alignment (all UI modes)
+    util::detour((void*)0x0044EC5C, naked_pvp_rank_icon_x, 8);
+    util::detour((void*)0x0044ECBC, naked_pvp_rank_icon_y, 7);
+    // PvP rank icon extended system — grade2_extended.png (all UI modes)
+    util::detour((void*)0x0044EBED, naked_0x44EBED, 6);
+    util::detour((void*)0x0044EC4D, naked_0x44EC4D, 7);
+    util::detour((void*)0x0044EC64, naked_0x44EC64_extended, 6);
 }
 
 void interface_patches::install()
@@ -520,13 +527,6 @@ void interface_patches::install()
     util::detour((void*)0x41F9C0, naked_0x41F9C0, 9);
     // Evolution bug fix
     util::detour((void*)0x41E2BB, naked_0x41E2BB, 7);
-    // PvP rank icon alignment
-    util::detour((void*)0x0044EC5C, naked_pvp_rank_icon_x, 8);
-    util::detour((void*)0x0044ECBC, naked_pvp_rank_icon_y, 7);
-    // PvP rank icon extended system (grade2_extended.png)
-    util::detour((void*)0x0044EBED, naked_0x44EBED, 6);
-    util::detour((void*)0x0044EC4D, naked_0x44EC4D, 7);
-    util::detour((void*)0x0044EC64, naked_0x44EC64_extended, 6);
     // Clock position (coordinates only — format and X offset are in install_common)
     util::detour((void*)0x4DDEDA, naked_ep4_main_map_servertime, 6);
     // EP4 HUD layout
