@@ -753,6 +753,7 @@ namespace imgui_layer
         load_settings_icon_texture();
         load_npc_icon_texture();
         load_teleport_icon_texture();
+        load_window_bg_texture();
         rank_icon::tick();
 
         // When the native UI is hidden (F11), suppress all overlay drawing

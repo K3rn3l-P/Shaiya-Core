@@ -348,16 +348,17 @@ namespace imgui_layer {
         bool panelOpen = g_showSettingsPanel;
         if (ImGui::Begin(
             "Quick Settings",
-            &panelOpen,
-            ImGuiWindowFlags_NoCollapse
-            | ImGuiWindowFlags_NoResize
-            | ImGuiWindowFlags_NoSavedSettings
-            | ImGuiWindowFlags_NoFocusOnAppearing
-            | ImGuiWindowFlags_NoBringToFrontOnFocus))
-        {
-            auto pos = ImGui::GetWindowPos();
-            auto size = ImGui::GetWindowSize();
-            remember_rect(g_settingsPanelRect, pos, ImVec2(pos.x + size.x, pos.y + size.y));
+                &panelOpen,
+                ImGuiWindowFlags_NoCollapse
+                | ImGuiWindowFlags_NoResize
+                | ImGuiWindowFlags_NoSavedSettings
+                | ImGuiWindowFlags_NoFocusOnAppearing
+                | ImGuiWindowFlags_NoBringToFrontOnFocus))
+            {
+                draw_window_background();
+                auto pos = ImGui::GetWindowPos();
+                auto size = ImGui::GetWindowSize();
+                remember_rect(g_settingsPanelRect, pos, ImVec2(pos.x + size.x, pos.y + size.y));
             if (std::fabs(pos.x - g_settingsPanelPosition.x) >= 0.5f
                 || std::fabs(pos.y - g_settingsPanelPosition.y) >= 0.5f)
             {
@@ -512,16 +513,17 @@ namespace imgui_layer {
         bool panelOpen = g_showNpcPanel;
         if (ImGui::Begin(
             "Remote NPC",
-            &panelOpen,
-            ImGuiWindowFlags_NoCollapse
-            | ImGuiWindowFlags_NoResize
-            | ImGuiWindowFlags_NoSavedSettings
-            | ImGuiWindowFlags_NoFocusOnAppearing
-            | ImGuiWindowFlags_NoBringToFrontOnFocus))
-        {
-            auto pos = ImGui::GetWindowPos();
-            auto size = ImGui::GetWindowSize();
-            remember_rect(g_npcPanelRect, pos, ImVec2(pos.x + size.x, pos.y + size.y));
+                &panelOpen,
+                ImGuiWindowFlags_NoCollapse
+                | ImGuiWindowFlags_NoResize
+                | ImGuiWindowFlags_NoSavedSettings
+                | ImGuiWindowFlags_NoFocusOnAppearing
+                | ImGuiWindowFlags_NoBringToFrontOnFocus))
+            {
+                draw_window_background();
+                auto pos = ImGui::GetWindowPos();
+                auto size = ImGui::GetWindowSize();
+                remember_rect(g_npcPanelRect, pos, ImVec2(pos.x + size.x, pos.y + size.y));
             if (std::fabs(pos.x - g_npcPanelPosition.x) >= 0.5f
                 || std::fabs(pos.y - g_npcPanelPosition.y) >= 0.5f)
             {
