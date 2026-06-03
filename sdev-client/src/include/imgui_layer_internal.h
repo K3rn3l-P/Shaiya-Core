@@ -314,6 +314,11 @@ namespace imgui_layer
     inline uint64_t g_teleportIconDataSize = 0;
     inline bool g_teleportIconFound = false;
     inline bool g_teleportIconLoadAttempted = false;
+    inline LPDIRECT3DTEXTURE9 g_windowBgTexture = nullptr;
+    inline uint64_t g_windowBgDataOffset = 0;
+    inline uint64_t g_windowBgDataSize = 0;
+    inline bool g_windowBgFound = false;
+    inline bool g_windowBgLoadAttempted = false;
 
     // Roulette panel layout
     constexpr float kRollButtonOffsetX = -1.0f;
@@ -662,6 +667,7 @@ namespace imgui_layer
     void ensure_emoji_catalog_loaded();
     void release_emoji_textures();
     EmojiEntry* find_emoji_by_token(const char* text);
+    bool is_visual_token_enabled(VisualTokenKind kind);
     LPDIRECT3DTEXTURE9 get_emoji_texture(EmojiEntry& emoji);
     bool ensure_gdiplus_started();
     DWORD read_gif_frame_delay_ms(Gdiplus::Bitmap& bitmap, UINT frameIndex);
@@ -691,6 +697,9 @@ namespace imgui_layer
     LPDIRECT3DTEXTURE9 load_roulette_icon_texture();
     LPDIRECT3DTEXTURE9 load_settings_icon_texture();
     LPDIRECT3DTEXTURE9 load_npc_icon_texture();
+    LPDIRECT3DTEXTURE9 load_window_bg_texture();
+    void draw_window_background();
+    void draw_panel_title_with_close(const char* title, bool& open);
     const char* __cdecl prepare_chat_text_for_emojis(int chatType, const char* text);
     const char* __cdecl prepare_static_text_for_emojis(const char* text);
     const char* __cdecl prepare_floating_text_for_emojis(const char* text);

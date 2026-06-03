@@ -51,6 +51,7 @@ namespace hook
     void resolutions();
     void select_screen();
     void title();
+    void unicode();
     void vehicle();
     void window();
 }
