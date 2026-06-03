@@ -13,6 +13,7 @@ namespace shaiya
 
 void Main();
 extern "C" __declspec(dllexport) void DllExport();
+void init_discord_rpc();
 inline constexpr unsigned kClientRouletteListWindowMessage = 0x8000 + 0x4A4;
 inline constexpr unsigned kClientRouletteRollWindowMessage = 0x8000 + 0x4A3;
 inline constexpr unsigned kClientEmojiTokenWindowMessage = 0x8000 + 0x4A5;
@@ -39,33 +40,18 @@ const char* get_custom_eft_name_from_ui();
 
 namespace hook
 {
-    void blacksmith();
-    void camera_limit();
-    void character();
     void command();
-    void custom_game();
-    void discord();
-    void equipment();
-    void client_features();
-    void exp_view();
     void imgui_layer();
-    void input();
     void item_icon();
-    void main_stats();
     void name_color();
-    void npc_button();
     void packet();
     void patch();
     void quick_slot();
     void raid();
     void resolutions();
     void select_screen();
-    void target_view();
     void title();
-    void ui_image();
-    void unicode();
     void vehicle();
-    void weapon_step();
     void window();
 }
 
