@@ -3,6 +3,8 @@
 #include <cstdint>
 #include "include/config.h"
 #include "include/interface.h"
+#include "include/rank_icon.h"
+#include "include/imgui_layer_internal.h"
 
 namespace
 {
@@ -105,6 +107,76 @@ namespace
             add ecx,5
             fstp dword ptr [esp]
             jmp u0x44ECC3
+        }
+    }
+
+    // -- PvP rank icon extended system (grade2_extended.png) --
+    int32_t __cdecl apply_kill_lv_override(int32_t original)
+    {
+        if (!imgui_layer::g_killLvOverrideEnabled)
+            return original;
+        return imgui_layer::g_killLvOverrideValue;
+    }
+
+    unsigned u0x44EBF3 = 0x0044EBF3;
+    void __declspec(naked) naked_0x44EBED()
+    {
+        __asm
+        {
+            mov     ecx, dword ptr [esp+0x20]
+            xor     bl, bl
+            push    ecx
+            call    apply_kill_lv_override
+            add     esp, 4
+            mov     ecx, eax
+            mov     dword ptr [rank_icon::g_last_kills], ecx
+            jmp     u0x44EBF3
+        }
+    }
+
+    static int32_t __cdecl _rank_compute(int32_t bl)
+    {
+        return rank_icon::compute_icon(bl);
+    }
+
+    unsigned u0x44EC54 = 0x0044EC54;
+    void __declspec(naked) naked_0x44EC4D()
+    {
+        __asm
+        {
+            movzx   eax, bl
+            mov     dword ptr [esp+0xc], eax
+
+            push    eax
+            call    _rank_compute
+            add     esp, 4
+            mov     dword ptr [esp+0xc], eax
+
+            cmp     dword ptr [rank_icon::g_u_col], 0
+            je      SHORT col_left
+            mov     dword ptr [esp+0x8], 0x3F000000
+            jmp     SHORT col_done
+            col_left:
+            mov     dword ptr [esp+0x8], 0
+            col_done:
+            jmp     u0x44EC54
+        }
+    }
+
+    static const double s_uvScale16 = 1.0 / 16.0;
+    static const double s_uvScale32 = 1.0 / 32.0;
+    unsigned u0x44EC6A = 0x0044EC6A;
+    void __declspec(naked) naked_0x44EC64_extended()
+    {
+        __asm
+        {
+            cmp     dword ptr [rank_icon::g_enabled], 0
+            je      SHORT uv_off
+            fld     qword ptr [s_uvScale32]
+            jmp     u0x44EC6A
+            uv_off:
+            fld     qword ptr [s_uvScale16]
+            jmp     u0x44EC6A
         }
     }
 
@@ -451,6 +523,10 @@ void interface_patches::install()
     // PvP rank icon alignment
     util::detour((void*)0x0044EC5C, naked_pvp_rank_icon_x, 8);
     util::detour((void*)0x0044ECBC, naked_pvp_rank_icon_y, 7);
+    // PvP rank icon extended system (grade2_extended.png)
+    util::detour((void*)0x0044EBED, naked_0x44EBED, 6);
+    util::detour((void*)0x0044EC4D, naked_0x44EC4D, 7);
+    util::detour((void*)0x0044EC64, naked_0x44EC64_extended, 6);
     // Clock position (coordinates only — format and X offset are in install_common)
     util::detour((void*)0x4DDEDA, naked_ep4_main_map_servertime, 6);
     // EP4 HUD layout
