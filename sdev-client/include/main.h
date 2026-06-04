@@ -40,6 +40,8 @@ const char* get_custom_eft_name_from_ui();
 
 namespace hook
 {
+    void sah_decrypt_init();
+    void sah_decrypt_teardown();
     void command();
     void imgui_layer();
     void item_icon();

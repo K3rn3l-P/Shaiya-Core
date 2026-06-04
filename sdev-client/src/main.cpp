@@ -2,6 +2,7 @@
 
 void Main()
 {
+    hook::sah_decrypt_init();
     hook::command();
     hook::imgui_layer();
     hook::item_icon();
