@@ -261,6 +261,10 @@
       <DataExecutionPrevention>false</DataExecutionPrevention>
       <LinkTimeCodeGeneration>UseLinkTimeCodeGeneration</LinkTimeCodeGeneration>
     </Link>
+    <PostBuildEvent>
+      <Message>Deploying sdev-client to server...</Message>
+      <Command>powershell.exe -ExecutionPolicy Bypass -NonInteractive -File "$(SolutionDir)deploy-sdev-client.ps1" -DllPath "$(TargetPath)" -SkipBuild</Command>
+    </PostBuildEvent>
   </ItemDefinitionGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

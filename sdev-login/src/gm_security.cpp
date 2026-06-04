@@ -20,6 +20,22 @@ namespace gm_security
         constexpr const char* kSettingsSection = "SETTINGS";
         constexpr int kMaxUsernameLen = 32;
 
+        // Constant-time helpers — prevengono timing attack su confronti segreti.
+        static bool secure_u32_eq(uint32_t a, uint32_t b)
+        {
+            volatile uint32_t diff = a ^ b;
+            return diff == 0;
+        }
+
+        static bool secure_mem_eq(const void* a, const void* b, size_t n)
+        {
+            const volatile uint8_t* pa = reinterpret_cast<const volatile uint8_t*>(a);
+            const volatile uint8_t* pb = reinterpret_cast<const volatile uint8_t*>(b);
+            volatile uint8_t acc = 0;
+            for (size_t i = 0; i < n; ++i) acc |= pa[i] ^ pb[i];
+            return acc == 0;
+        }
+
         const char* get_ini_path()
         {
             static char path[MAX_PATH]{};
@@ -161,6 +177,21 @@ namespace gm_security
             SQLFreeStmt(db->stmt, SQL_RESET_PARAMS);
 
             return isAdmin;
+        }
+
+        // --- Client Secret ---
+
+        const char* get_client_secret()
+        {
+            static char secret[128]{};
+            static bool loaded = false;
+            if (!loaded)
+            {
+                loaded = true;
+                GetPrivateProfileStringA(kSettingsSection, "ClientSecret", "",
+                                         secret, sizeof(secret), get_ini_path());
+            }
+            return secret;
         }
 
         // --- Token Secret ---
@@ -359,7 +390,7 @@ namespace gm_security
                 if (hHash) BCryptDestroyHash(hHash);
                 if (hAlg)  BCryptCloseAlgorithmProvider(hAlg, 0);
 
-                if (!computed) continue;
+                if (!computed) { SecureZeroMemory(hash, sizeof(hash)); continue; }
 
                 char expected[17]{};
                 std::snprintf(expected, sizeof(expected),
@@ -367,8 +398,10 @@ namespace gm_security
                     hash[0], hash[1], hash[2], hash[3],
                     hash[4], hash[5], hash[6], hash[7]);
 
-                if (memcmp(token, expected, 15) == 0)
-                    return true;
+                bool match = secure_mem_eq(token, expected, 15);
+                SecureZeroMemory(hash, sizeof(hash));
+                SecureZeroMemory(expected, sizeof(expected));
+                if (match) return true;
             }
 
             return false;
@@ -412,5 +445,106 @@ namespace gm_security
 
         *argonResult = verify_pbkdf2(enpassword, password) ? 1 : 0;
         return true;
+    }
+
+    bool verify_rsa_client_token(uint32_t token)
+    {
+        const char* secret = get_client_secret();
+        if (!secret || !secret[0])
+            return false;  // segreto non configurato → nega sempre
+
+        FILETIME ft;
+        GetSystemTimeAsFileTime(&ft);
+        ULARGE_INTEGER uli;
+        uli.LowPart  = ft.dwLowDateTime;
+        uli.HighPart = ft.dwHighDateTime;
+        ULONGLONG unixSecs = (uli.QuadPart - 116444736000000000ULL) / 10000000ULL;
+        unsigned int window = static_cast<unsigned int>(unixSecs / 300);
+
+        // Controlla finestra corrente, precedente e successiva (±5 min di clock drift)
+        for (int w = -1; w <= 1; w++)
+        {
+            unsigned int wnd = window + static_cast<unsigned int>(w);
+            char data[32]{};
+            std::snprintf(data, sizeof(data), "client:%u", wnd);
+
+            BCRYPT_ALG_HANDLE  hAlg  = nullptr;
+            BCRYPT_HASH_HANDLE hHash = nullptr;
+            BYTE hash[32]{};
+            bool computed = false;
+
+            if (BCryptOpenAlgorithmProvider(&hAlg, BCRYPT_SHA256_ALGORITHM, nullptr,
+                    BCRYPT_ALG_HANDLE_HMAC_FLAG) == 0)
+            {
+                if (BCryptCreateHash(hAlg, &hHash, nullptr, 0,
+                        reinterpret_cast<PUCHAR>(const_cast<char*>(secret)),
+                        static_cast<ULONG>(std::strlen(secret)), 0) == 0)
+                {
+                    if (BCryptHashData(hHash,
+                            reinterpret_cast<PUCHAR>(data),
+                            static_cast<ULONG>(std::strlen(data)), 0) == 0)
+                        computed = (BCryptFinishHash(hHash, hash, 32, 0) == 0);
+                }
+            }
+            if (hHash) BCryptDestroyHash(hHash);
+            if (hAlg)  BCryptCloseAlgorithmProvider(hAlg, 0);
+
+            if (!computed) { SecureZeroMemory(hash, sizeof(hash)); continue; }
+
+            uint32_t expected = static_cast<uint32_t>(hash[0])
+                              | (static_cast<uint32_t>(hash[1]) << 8)
+                              | (static_cast<uint32_t>(hash[2]) << 16)
+                              | (static_cast<uint32_t>(hash[3]) << 24);
+
+            bool match = secure_u32_eq(token, expected);
+            SecureZeroMemory(hash, sizeof(hash));
+            if (match) return true;
+        }
+        return false;
+    }
+
+    uint32_t get_client_auth_token()
+    {
+        const char* secret = get_client_secret();
+        if (!secret || !secret[0])
+            return 0;  // nessun segreto = XOR con 0 = passthrough (fail-open)
+
+        FILETIME ft;
+        GetSystemTimeAsFileTime(&ft);
+        ULARGE_INTEGER uli;
+        uli.LowPart  = ft.dwLowDateTime;
+        uli.HighPart = ft.dwHighDateTime;
+        ULONGLONG unixSecs = (uli.QuadPart - 116444736000000000ULL) / 10000000ULL;
+        unsigned int window = static_cast<unsigned int>(unixSecs / 300);
+
+        char data[32]{};
+        std::snprintf(data, sizeof(data), "client:%u", window);
+
+        BCRYPT_ALG_HANDLE  hAlg  = nullptr;
+        BCRYPT_HASH_HANDLE hHash = nullptr;
+        BYTE hash[32]{};
+        bool ok = false;
+
+        if (BCryptOpenAlgorithmProvider(&hAlg, BCRYPT_SHA256_ALGORITHM, nullptr,
+                BCRYPT_ALG_HANDLE_HMAC_FLAG) == 0)
+        {
+            if (BCryptCreateHash(hAlg, &hHash, nullptr, 0,
+                    reinterpret_cast<PUCHAR>(const_cast<char*>(secret)),
+                    static_cast<ULONG>(std::strlen(secret)), 0) == 0)
+            {
+                if (BCryptHashData(hHash,
+                        reinterpret_cast<PUCHAR>(data),
+                        static_cast<ULONG>(std::strlen(data)), 0) == 0)
+                    ok = (BCryptFinishHash(hHash, hash, 32, 0) == 0);
+            }
+        }
+        if (hHash) BCryptDestroyHash(hHash);
+        if (hAlg)  BCryptCloseAlgorithmProvider(hAlg, 0);
+
+        if (!ok) return 0;
+        return static_cast<uint32_t>(hash[0])
+             | (static_cast<uint32_t>(hash[1]) << 8)
+             | (static_cast<uint32_t>(hash[2]) << 16)
+             | (static_cast<uint32_t>(hash[3]) << 24);
     }
 }

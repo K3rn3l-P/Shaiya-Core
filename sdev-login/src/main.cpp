@@ -102,10 +102,80 @@ void __declspec(naked) naked_0x404E84()
     }
 }
 
+// Hook at 0x404548 — 0xA101 (RSA handshake) handler.
+// Punto: dopo il check key_size==0x80, prima di processare la chiave RSA.
+// At entry: EBP = iVar2+2, AL = 0x80, EDI = this (CUser*).
+// Client invia 4 byte extra dopo la chiave RSA (a iVar2+133 = [EBP+0x83]).
+// Se token invalido → FUN_00410190(this,9,0) = disconnect prima del login.
+// Displaced: ADD EBP,3 (3) + PUSH EBP (1) + MOVZX ECX,AL (3) = 7 bytes.
+unsigned u0x40454f = 0x40454f;
+unsigned u0x404555 = 0x404555;
+void __declspec(naked) naked_0x404548()
+{
+    __asm
+    {
+        pushad
+
+        // Legge il token (4 byte) posizionato dopo i 128 byte di chiave RSA.
+        // EBP = iVar2+2 → [EBP+3]=inizio chiave RSA → [EBP+3+128]=[EBP+0x83]=token
+        mov  eax, dword ptr [ebp + 0x83]
+        push eax
+        call gm_security::verify_rsa_client_token
+        add  esp, 4
+        test al, al
+
+        popad
+        jz   _rsa_reject
+
+        // Displaced: ADD EBP,3; PUSH EBP; MOVZX ECX,AL (AL=0x80 preserved by popad)
+        add  ebp, 3
+        push ebp
+        movzx ecx, al
+        jmp  u0x40454f          // → PUSH EBX; CALL FUN_00404e60
+
+        _rsa_reject:
+        push 0
+        push 9
+        mov  ecx, edi           // this (__thiscall)
+        mov  eax, 0x00410190
+        call eax                // FUN_00410190(this, 9, 0) — disconnect
+        jmp  u0x404555          // exit (LeaveCriticalSection)
+    }
+}
+
+// Hook at 0x4043BC — 0xA202 handler, after precondition checks.
+// [EBP+3] = server IPv4 echoed by client (uint32_t, little-endian).
+// Custom client sends (serverIP ^ token); hook XORs back to restore original IP
+// before FUN_00407400 uses it for server-list lookup.
+// Stock client sends raw IP → XOR corrupts it → lookup fails → natural reject.
+// Displaced: LEA EDX,[ESP+0x14] + LEA ESI,[ESP+0x34] = 8 bytes.
+unsigned u0x4043C4 = 0x4043C4;
+void __declspec(naked) naked_0x4043BC()
+{
+    __asm
+    {
+        pushad
+
+        call gm_security::get_client_auth_token   // EAX = token (no args, cdecl)
+        xor  dword ptr [ebp + 3], eax             // un-XOR server IP in-place
+
+        popad
+
+        // displaced instructions (ESP restored by popad)
+        lea edx, [esp + 0x14]
+        lea esi, [esp + 0x34]
+        jmp  u0x4043C4
+    }
+}
+
 void Main()
 {
     // GetUser (GM Security)
     util::detour((void*)0x406A8C, naked_0x406A8C, 7);
     // CUserCrypto::KeyInit
     util::detour((void*)0x404E84, naked_0x404E84, 5);
+    // 0xA101 RSA handshake: verifica token client PRIMA del login
+    util::detour((void*)0x404548, naked_0x404548, 7);
+    // 0xA202 select-server: XOR token sul server IP
+    util::detour((void*)0x4043BC, naked_0x4043BC, 8);
 }

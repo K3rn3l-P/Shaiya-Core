@@ -7,6 +7,7 @@ namespace shaiya
     struct CNetwork
     {
         static void Send(void* buffer, int length);
+        static uint32_t ComputeToken();
     };
     #pragma pack(pop)
 }

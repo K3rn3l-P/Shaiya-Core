@@ -15,6 +15,13 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD dwReason, LPVOID lpReserved)
         break;
     case DLL_PROCESS_ATTACH:
         DisableThreadLibraryCalls(hModule);
+        // Debugger rilevato → nessuna inizializzazione; il gioco crasha al load di data.sah.
+        if (IsDebuggerPresent()) break;
+        {
+            BOOL remote = FALSE;
+            CheckRemoteDebuggerPresent(GetCurrentProcess(), &remote);
+            if (remote) break;
+        }
         Main();
         break;
     case DLL_THREAD_DETACH:

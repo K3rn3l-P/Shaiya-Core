@@ -1,6 +1,7 @@
 #include <util/util.h>
 #include <algorithm>
 #include <cstring>
+#include "include/shaiya/CNetwork.h"
 #include <shaiya/include/network/game/outgoing/0800.h>
 #include <shaiya/include/network/game/outgoing/1F00.h>
 #include "include/main.h"
@@ -664,11 +665,35 @@ void __declspec(naked) naked_0x5F1E10()
     }
 }
 
+// Hook a 0x5EC5D5 — dentro FUN_005ec5a0 (sender 0xA101 RSA).
+// Displaced: PUSH 0x83 (5 byte). EDX = &buf (opcode+key_size+RSA_key, 131 byte).
+// Appende token[4] a buf+131, cambia len 131→135 (0x87).
+// Server (hook 0x404548 in sdev-login) legge il token da [EBP+0x83] = iVar2+133.
+unsigned u0x5EC5DA = 0x5EC5DA;
+void __declspec(naked) naked_0x5EC5D5()
+{
+    __asm
+    {
+        pushad
+        // pushad frame: [esp+0]=EDI [esp+4]=ESI [esp+8]=EBP [esp+12]=ESP_orig
+        //               [esp+16]=EBX [esp+20]=EDX [esp+24]=ECX [esp+28]=EAX
+        call shaiya::CNetwork::ComputeToken   // EAX = HMAC token (cdecl, no args)
+        mov  ecx, eax                          // salva token in ECX
+        mov  edx, dword ptr [esp + 20]         // ripristina EDX = &buf dal frame pushad
+        mov  dword ptr [edx + 131], ecx        // scrive token a buf[131..134]
+        popad
+        push 0x87          // len = 135 (invece di 131)
+        jmp  u0x5EC5DA     // → MOV word ptr [ESP+0xc],AX (store opcode) → copy RSA → CALL
+    }
+}
+
 void hook::packet()
 {
     // Increase the buy/sell item quantity limit from 10 to 255.
     packet::patch_quantity_limit();
     // Custom roulette packets are consumed before the stock dispatcher can drop them.
+    // 0xA101 RSA handshake send: appende token dopo chiave RSA (131→135 byte)
+    util::detour((void*)0x5EC5D5, naked_0x5EC5D5, 5);
     util::detour((void*)0x5F1E10, naked_0x5F1E10, 7);
     // disguise removal bug (0x303 handler)
     util::detour((void*)0x5933F8, naked_0x5933F8, 6);
