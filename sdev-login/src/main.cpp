@@ -1,9 +1,11 @@
 #include <array>
-#include <array>
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <sql.h>
 #include <sqlext.h>
+#include <unordered_map>
+#include <string>
+#include <mutex>
 #include <util/util.h>
 #include "include/gm_security.h"
 #include "include/main.h"
@@ -11,11 +13,53 @@
 using namespace shaiya;
 
 // ===========================================================================
+// Per-IP login brute force guard
+// ===========================================================================
+namespace login_guard
+{
+    static constexpr int   MAX_FAILS  = 5;
+    static constexpr DWORD WINDOW_MS  = 600000; // 10 minuti sliding window
+
+    struct Entry { int fails; DWORD first_fail; };
+    static std::unordered_map<std::string, Entry> g_fails;
+    static std::mutex g_mtx;
+
+    static bool is_allowed(const char* ip)
+    {
+        auto now = GetTickCount();
+        std::lock_guard<std::mutex> lk(g_mtx);
+        auto it = g_fails.find(ip);
+        if (it == g_fails.end()) return true;
+        auto& e = it->second;
+        if (now - e.first_fail > WINDOW_MS) { g_fails.erase(it); return true; }
+        return e.fails < MAX_FAILS;
+    }
+
+    static void on_fail(const char* ip)
+    {
+        auto now = GetTickCount();
+        std::lock_guard<std::mutex> lk(g_mtx);
+        auto& e = g_fails[ip];
+        if (e.fails == 0 || now - e.first_fail > WINDOW_MS) { e.first_fail = now; e.fails = 1; }
+        else e.fails++;
+    }
+
+    static void on_success(const char* ip)
+    {
+        std::lock_guard<std::mutex> lk(g_mtx);
+        g_fails.erase(ip);
+    }
+}
+
+// ===========================================================================
 // Login hook
 // ===========================================================================
 
 short hook_0x406A8C(SDatabase* db, char* username, char* password, unsigned lowPart, unsigned highPart, char* ipv4)
 {
+    if (!login_guard::is_allowed(ipv4))
+        return -1;
+
     if (!gm_security::is_login_allowed(db, username, ipv4))
         return -1;
 
@@ -25,7 +69,12 @@ short hook_0x406A8C(SDatabase* db, char* username, char* password, unsigned lowP
     int argonResult = 0;
 
     if (!gm_security::verify_password(db, username, password, &argonResult))
+    {
+        login_guard::on_fail(ipv4);
         return -1;
+    }
+
+    login_guard::on_success(ipv4);
 
     std::snprintf(buffer.data(), buffer.size(),
         "EXEC [PS_UserData].[dbo].[usp_Try_GameLogin_Taiwan]"
