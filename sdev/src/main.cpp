@@ -107,6 +107,7 @@ void Main()
     // SSyncHeap<CUser>::Alloc
     util::write_memory((void*)0x411F74, &size, 4);
 
+    hook::connection_guard();
     hook::etain_shield();
     hook::item_effect();
     hook::utilities();
