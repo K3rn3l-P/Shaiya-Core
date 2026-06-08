@@ -669,6 +669,14 @@ void __declspec(naked) naked_0x5F1E10()
 // Displaced: PUSH 0x83 (5 byte). EDX = &buf (opcode+key_size+RSA_key, 131 byte).
 // Appende token[4] a buf+131, cambia len 131→135 (0x87).
 // Server (hook 0x404548 in sdev-login) legge il token da [EBP+0x83] = iVar2+133.
+extern uint8_t g_sah_token[8];  // sah_decrypt.cpp: SHA256(game.exe)[0:8]
+extern void    wait_sah_token_3s(); // sah_decrypt.cpp: spinlock finché token pronto (max 3s)
+
+// Hook a 0x5EC5D5 — dentro FUN_005ec5a0 (sender 0xA101 RSA).
+// Displaced: PUSH 0x83 (5 byte). EDX = &buf (opcode+key_size+RSA_key, 131 byte).
+// Appende auth_token[4] a buf+131 e sah_token[8] a buf+135, cambia len 131→143 (0x8F).
+// Server (hook 0x404548 in sdev-login) legge auth_token da [EBP+0x83], sah_token da [EBP+0x87].
+// wait_sah_token_3s() garantisce che il decrypt sia completato prima di leggere g_sah_token.
 unsigned u0x5EC5DA = 0x5EC5DA;
 void __declspec(naked) naked_0x5EC5D5()
 {
@@ -677,13 +685,20 @@ void __declspec(naked) naked_0x5EC5D5()
         pushad
         // pushad frame: [esp+0]=EDI [esp+4]=ESI [esp+8]=EBP [esp+12]=ESP_orig
         //               [esp+16]=EBX [esp+20]=EDX [esp+24]=ECX [esp+28]=EAX
+        call wait_sah_token_3s         // blocca finché g_sah_token_ready (cdecl, no args)
         call shaiya::CNetwork::ComputeToken   // EAX = HMAC token (cdecl, no args)
-        mov  ecx, eax                          // salva token in ECX
-        mov  edx, dword ptr [esp + 20]         // ripristina EDX = &buf dal frame pushad
-        mov  dword ptr [edx + 131], ecx        // scrive token a buf[131..134]
+        mov  ecx, eax                          // salva auth token in ECX
+        mov  edx, dword ptr [esp + 20]         // EDX = &buf
+        mov  dword ptr [edx + 131], ecx        // auth token → buf[131..134]
+        // SAH token (8 byte): g_sah_token → buf[135..142]
+        lea  edi, [edx + 135]
+        mov  eax, dword ptr [g_sah_token]
+        mov  dword ptr [edi], eax
+        mov  eax, dword ptr [g_sah_token + 4]
+        mov  dword ptr [edi + 4], eax
         popad
-        push 0x87          // len = 135 (invece di 131)
-        jmp  u0x5EC5DA     // → MOV word ptr [ESP+0xc],AX (store opcode) → copy RSA → CALL
+        push 0x8F          // len = 143 (131 + 4 auth_token + 8 sah_token)
+        jmp  u0x5EC5DA
     }
 }
 

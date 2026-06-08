@@ -339,6 +339,24 @@ namespace gm_security
             return diff == 0;
         }
 
+        // --- SAH Token (Layer 2) ---
+
+        const uint8_t* get_expected_sah_token()
+        {
+            static uint8_t token[8] = {};
+            static bool loaded = false;
+            static bool configured = false;
+            if (!loaded)
+            {
+                loaded = true;
+                char hex[17]{};
+                GetPrivateProfileStringA(kSettingsSection, "GameHashHex", "",
+                                         hex, sizeof(hex), get_ini_path());
+                configured = (std::strlen(hex) == 16 && hex_decode(hex, 16, token, 8));
+            }
+            return configured ? token : nullptr;
+        }
+
         bool verify_hmac_token(const char* username, const char* token)
         {
             if (!token || !username) return false;
@@ -501,6 +519,16 @@ namespace gm_security
             if (match) return true;
         }
         return false;
+    }
+
+    bool verify_sah_token(const uint8_t* client_token)
+    {
+        if (!client_token)
+            return false;
+        const uint8_t* expected = get_expected_sah_token();
+        if (!expected)
+            return true;  // SahTokenHex non configurato → fail-open (rollout graduale)
+        return secure_mem_eq(client_token, expected, 8);
     }
 
     uint32_t get_client_auth_token()

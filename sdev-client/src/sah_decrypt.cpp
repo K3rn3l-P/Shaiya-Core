@@ -47,6 +47,46 @@ namespace
         return true;
     }
 
+    static bool compute_hmac_sha256(const uint8_t* key, ULONG keyLen,
+                                     const uint8_t* msg, ULONG msgLen,
+                                     uint8_t out[32])
+    {
+        BCRYPT_ALG_HANDLE hAlg  = nullptr;
+        BCRYPT_HASH_HANDLE hHash = nullptr;
+        bool ok = false;
+        if (!BCRYPT_SUCCESS(BCryptOpenAlgorithmProvider(&hAlg, BCRYPT_SHA256_ALGORITHM,
+                                                         nullptr, BCRYPT_ALG_HANDLE_HMAC_FLAG)))
+            return false;
+        if (BCRYPT_SUCCESS(BCryptCreateHash(hAlg, &hHash, nullptr, 0,
+                                             const_cast<PUCHAR>(key), keyLen, 0)))
+        {
+            BCryptHashData(hHash, const_cast<PUCHAR>(msg), msgLen, 0);
+            ok = BCRYPT_SUCCESS(BCryptFinishHash(hHash, out, 32, 0));
+            BCryptDestroyHash(hHash);
+        }
+        BCryptCloseAlgorithmProvider(hAlg, 0);
+        return ok;
+    }
+
+    // Returns true if data.safb is absent (skip) or HMAC matches.
+    // Returns false if present but corrupted or HMAC mismatch.
+    static bool verify_safb_sidecar(const std::vector<char>& sah, const uint8_t key[32])
+    {
+        auto path = game_data::relative_path("data.safb");
+        std::ifstream f(path, std::ios::binary);
+        if (!f) return true;  // absent → skip (first-run / legacy clients)
+        uint8_t sidecar[48] = {};
+        f.read(reinterpret_cast<char*>(sidecar), 48);
+        if (f.gcount() != 48) return false;
+        if (memcmp(sidecar, "SAFB", 4) != 0) return false;
+        uint8_t expected[32] = {};
+        if (!compute_hmac_sha256(key, 32,
+                reinterpret_cast<const uint8_t*>(sah.data()),
+                static_cast<ULONG>(sah.size()), expected))
+            return false;
+        return memcmp(expected, sidecar + 8, 32) == 0;
+    }
+
     static std::vector<char> decrypt_esah_bcrypt(const std::vector<char>& esah, const uint8_t key[32])
     {
         if (esah.size() < sizeof(EsahHeader)) return {};
@@ -120,12 +160,28 @@ std::vector<char> g_sah_plain;           // decrypted SAH in RAM, used by scan_s
 static uint8_t g_sah_key[32]   = {};
 static bool    g_sah_key_ready  = false;
 
+uint8_t        g_sah_token[8]   = {};   // SHA256(game.exe)[0:8] — appended to 0xA101 RSA packet; ps_login verifies via GameHashHex in GMSecurity.ini
+volatile bool  g_sah_token_ready = false;
+
 // fd returned by game.exe's own _open() for the temp SAH file.
 // Lives in game.exe's static CRT fd table — game's __read/__close work on it.
 static int  g_datasah_fd        = -1;
 
 // Path of the temp file in %TEMP% — stored for background deletion thread.
 static char g_sah_temp_path[MAX_PATH] = {};
+
+// Called from naked_0x5EC5D5 (0xA101 send hook) to block until SAH token is
+// computed. Decrypt completes in <100ms normally; 3s timeout is a safety net.
+void wait_sah_token_3s()
+{
+    DWORD start = GetTickCount();
+    while (!g_sah_token_ready)
+    {
+        if (GetTickCount() - start >= 3000u)
+            break;
+        Sleep(5);
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Background thread: delete temp SAH file once game closes its read handle.
@@ -202,11 +258,76 @@ static void do_sah_decrypt_work()
     }
 
     g_sah_plain = decrypt_esah_bcrypt(raw, g_sah_key);
+
+    if (g_sah_plain.empty())
+    {
+        SecureZeroMemory(g_sah_key, 32);
+        g_sah_key_ready = false;
+        diag_log("ERR_DECRYPT_EMPTY");
+        return;
+    }
+
+    // Verify SAFB sidecar while g_sah_key is still available.
+    if (!verify_safb_sidecar(g_sah_plain, g_sah_key))
+    {
+        diag_log("ERR_SAFB_MISMATCH");
+        g_sah_plain.clear();
+        SecureZeroMemory(g_sah_key, 32);
+        g_sah_key_ready = false;
+        return;
+    }
+    diag_log("SAFB_OK");
+
+    // Compute SHA256(game.exe)[0:8] for server-side game integrity check in 0xA101 packet.
+    // ps_login verifies this against GameHashHex in GMSecurity.ini.
+    // Independent of Updater.exe: even a modified Updater cannot bypass this check.
+    {
+        char exePath[MAX_PATH] = {};
+        DWORD exePathLen = GetModuleFileNameA(nullptr, exePath, MAX_PATH);
+
+        BCRYPT_ALG_HANDLE  hAlg  = nullptr;
+        BCRYPT_HASH_HANDLE hHash = nullptr;
+        uint8_t sha256[32] = {};
+        bool ok = false;
+
+        if (exePathLen > 0 && exePathLen < MAX_PATH &&
+            BCRYPT_SUCCESS(BCryptOpenAlgorithmProvider(&hAlg, BCRYPT_SHA256_ALGORITHM, nullptr, 0)))
+        {
+            if (BCRYPT_SUCCESS(BCryptCreateHash(hAlg, &hHash, nullptr, 0, nullptr, 0, 0)))
+            {
+                HANDLE hFile = CreateFileA(exePath, GENERIC_READ, FILE_SHARE_READ,
+                                            nullptr, OPEN_EXISTING, 0, nullptr);
+                if (hFile != INVALID_HANDLE_VALUE)
+                {
+                    uint8_t buf[65536];
+                    DWORD   nRead = 0;
+                    ok = true;
+                    while (ReadFile(hFile, buf, sizeof(buf), &nRead, nullptr) && nRead > 0)
+                        BCryptHashData(hHash, buf, nRead, 0);
+                    CloseHandle(hFile);
+                    ok = BCRYPT_SUCCESS(BCryptFinishHash(hHash, sha256, 32, 0)) && ok;
+                }
+                BCryptDestroyHash(hHash);
+            }
+            BCryptCloseAlgorithmProvider(hAlg, 0);
+        }
+
+        if (ok)
+        {
+            memcpy(g_sah_token, sha256, 8);
+            g_sah_token_ready = true;
+            diag_log("GAME_HASH_READY");
+        }
+        else
+        {
+            diag_log("ERR_GAME_HASH");
+        }
+        SecureZeroMemory(sha256, sizeof(sha256));
+    }
+
     SecureZeroMemory(g_sah_key, 32);
     g_sah_key_ready = false;
     diag_log("DECRYPT_DONE", static_cast<DWORD>(g_sah_plain.size()));
-
-    if (g_sah_plain.empty()) { diag_log("ERR_DECRYPT_EMPTY"); return; }
 
     // 2. Write to %TEMP%\sah<random>.tmp  (not in game directory)
     char tempDir[MAX_PATH] = {};
@@ -343,6 +464,8 @@ void hook::sah_decrypt_teardown()
         g_sah_plain.clear();
     }
     SecureZeroMemory(g_sah_key, 32);
-    g_sah_key_ready = false;
-    g_datasah_fd    = -1;
+    SecureZeroMemory(g_sah_token, sizeof(g_sah_token));
+    g_sah_token_ready = false;
+    g_sah_key_ready   = false;
+    g_datasah_fd      = -1;
 }

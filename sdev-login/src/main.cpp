@@ -154,7 +154,7 @@ void __declspec(naked) naked_0x404E84()
 // Hook at 0x404548 — 0xA101 (RSA handshake) handler.
 // Punto: dopo il check key_size==0x80, prima di processare la chiave RSA.
 // At entry: EBP = iVar2+2, AL = 0x80, EDI = this (CUser*).
-// Client invia 4 byte extra dopo la chiave RSA (a iVar2+133 = [EBP+0x83]).
+// Client invia auth_token[4] a [EBP+0x83] (iVar2+133) + sah_token[8] a [EBP+0x87] (iVar2+137).
 // Se token invalido → FUN_00410190(this,9,0) = disconnect prima del login.
 // Displaced: ADD EBP,3 (3) + PUSH EBP (1) + MOVZX ECX,AL (3) = 7 bytes.
 unsigned u0x40454f = 0x40454f;
@@ -165,24 +165,31 @@ void __declspec(naked) naked_0x404548()
     {
         pushad
 
-        // Legge il token (4 byte) posizionato dopo i 128 byte di chiave RSA.
-        // EBP = iVar2+2 → [EBP+3]=inizio chiave RSA → [EBP+3+128]=[EBP+0x83]=token
+        // RSA auth token (4 byte) a [EBP+0x83]
         mov  eax, dword ptr [ebp + 0x83]
         push eax
         call gm_security::verify_rsa_client_token
         add  esp, 4
         test al, al
+        jz   _reject
+
+        // SAH token (8 byte) a [EBP+0x87]: SHA256(data.sah)[0:8] inviato dal client
+        lea  eax, [ebp + 0x87]
+        push eax
+        call gm_security::verify_sah_token
+        add  esp, 4
+        test al, al
+        jz   _reject
 
         popad
-        jz   _rsa_reject
-
         // Displaced: ADD EBP,3; PUSH EBP; MOVZX ECX,AL (AL=0x80 preserved by popad)
         add  ebp, 3
         push ebp
         movzx ecx, al
         jmp  u0x40454f          // → PUSH EBX; CALL FUN_00404e60
 
-        _rsa_reject:
+        _reject:
+        popad
         push 0
         push 9
         mov  ecx, edi           // this (__thiscall)
