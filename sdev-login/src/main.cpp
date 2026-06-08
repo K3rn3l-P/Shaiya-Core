@@ -6,8 +6,11 @@
 #include <unordered_map>
 #include <string>
 #include <mutex>
+#include <cstring>
+#include <cstdio>
 #include <util/util.h>
 #include "include/gm_security.h"
+#include "include/login_logger.h"
 #include "include/main.h"
 #include "include/shaiya/SDatabase.h"
 using namespace shaiya;
@@ -58,10 +61,16 @@ namespace login_guard
 short hook_0x406A8C(SDatabase* db, char* username, char* password, unsigned lowPart, unsigned highPart, char* ipv4)
 {
     if (!login_guard::is_allowed(ipv4))
+    {
+        login_logger::log_fail(ipv4, username, "BRUTE_FORCE_BLOCKED");
         return -1;
+    }
 
     if (!gm_security::is_login_allowed(db, username, ipv4))
+    {
+        login_logger::log_fail(ipv4, username, "WHITELIST_DENIED");
         return -1;
+    }
 
     ULARGE_INTEGER sessionId{ lowPart, highPart };
     std::array<char, 1024> buffer{};
@@ -71,10 +80,12 @@ short hook_0x406A8C(SDatabase* db, char* username, char* password, unsigned lowP
     if (!gm_security::verify_password(db, username, password, &argonResult))
     {
         login_guard::on_fail(ipv4);
+        login_logger::log_fail(ipv4, username, "PASSWORD_FAIL");
         return -1;
     }
 
     login_guard::on_success(ipv4);
+    login_logger::log_ok(ipv4, username);
 
     std::snprintf(buffer.data(), buffer.size(),
         "EXEC [PS_UserData].[dbo].[usp_Try_GameLogin_Taiwan]"
@@ -151,6 +162,37 @@ void __declspec(naked) naked_0x404E84()
     }
 }
 
+// Estrae l'IPv4 da CUser* (SConnection::address.ipv4 a offset 0x70 da CUser*).
+// SInternetAddress::ipv4 è in network byte order → b[0].b[1].b[2].b[3] è corretto.
+static void cuser_get_ip(const void* cuser, char out[16])
+{
+    if (!cuser) { out[0] = '?'; out[1] = '\0'; return; }
+    uint32_t raw = 0;
+    std::memcpy(&raw, static_cast<const char*>(cuser) + 0x70, 4);
+    const auto* b = reinterpret_cast<const uint8_t*>(&raw);
+    std::snprintf(out, 16, "%d.%d.%d.%d", b[0], b[1], b[2], b[3]);
+}
+
+// Verifica auth_token + game_hash e logga il motivo del fallimento con IP.
+// Chiamato da naked_0x404548; cuser_ptr = EDI = CUser*.
+static bool verify_a101_and_log(uint32_t auth_token, const uint8_t* game_hash, const void* cuser_ptr)
+{
+    char ip[16];
+    cuser_get_ip(cuser_ptr, ip);
+
+    if (!gm_security::verify_rsa_client_token(auth_token))
+    {
+        login_logger::log_fail(ip, "-", "TOKEN_INVALID (client non autorizzato)");
+        return false;
+    }
+    if (!gm_security::verify_sah_token(game_hash))
+    {
+        login_logger::log_fail(ip, "-", "GAME_HASH_INVALID (game.exe modificato)");
+        return false;
+    }
+    return true;
+}
+
 // Hook at 0x404548 — 0xA101 (RSA handshake) handler.
 // Punto: dopo il check key_size==0x80, prima di processare la chiave RSA.
 // At entry: EBP = iVar2+2, AL = 0x80, EDI = this (CUser*).
@@ -165,19 +207,15 @@ void __declspec(naked) naked_0x404548()
     {
         pushad
 
-        // RSA auth token (4 byte) a [EBP+0x83]
-        mov  eax, dword ptr [ebp + 0x83]
-        push eax
-        call gm_security::verify_rsa_client_token
-        add  esp, 4
-        test al, al
-        jz   _reject
-
-        // SAH token (8 byte) a [EBP+0x87]: SHA256(data.sah)[0:8] inviato dal client
+        // verify_a101_and_log(uint32_t auth_token, const uint8_t* game_hash, const void* cuser_ptr)
+        // cdecl: push last arg first
+        push edi                           // cuser_ptr (3° arg) — EDI = this (CUser*)
         lea  eax, [ebp + 0x87]
-        push eax
-        call gm_security::verify_sah_token
-        add  esp, 4
+        push eax                           // game_hash (2° arg) — &buf[135]
+        mov  eax, dword ptr [ebp + 0x83]
+        push eax                           // auth_token (1° arg) — buf[131..134]
+        call verify_a101_and_log
+        add  esp, 12
         test al, al
         jz   _reject
 

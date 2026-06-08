@@ -12,6 +12,7 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="include\gm_security.h" />
+    <ClInclude Include="include\login_logger.h" />
     <ClInclude Include="include\main.h" />
     <ClInclude Include="include\shaiya\AesKey.h" />
     <ClInclude Include="include\shaiya\CUser.h" />
@@ -37,6 +38,7 @@
     <ClCompile Include="include\shaiya\SDatabase.cpp" />
     <ClCompile Include="src\dllmain.cpp" />
     <ClCompile Include="src\gm_security.cpp" />
+    <ClCompile Include="src\login_logger.cpp" />
     <ClCompile Include="src\main.cpp" />
   </ItemGroup>
   <ItemGroup>
