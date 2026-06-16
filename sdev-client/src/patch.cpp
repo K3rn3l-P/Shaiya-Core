@@ -858,6 +858,29 @@ namespace
         }
     }
 
+    // -- World-load null guard: UI texture load path may return NULL, then
+    //    MOV EAX,[EAX+0xc] at 0x00674C38 crashes.
+    //    Displaced: MOV ECX,[EBP+0xC](3) + MOV EDX,[EBP-0x10](3) +
+    //               MOV EAX,[EDX](2) + MOV EAX,[EAX+0xC](3) = 11 bytes.
+    //    On EAX==NULL skip to 0x00674C59 (XOR EAX,EAX → return 0).
+    unsigned u0x674c3b = 0x00674c3b;
+    unsigned u0x674c59 = 0x00674c59;
+    void __declspec(naked) naked_0x674c30()
+    {
+        __asm
+        {
+            mov  ecx, dword ptr [ebp + 0xc]
+            mov  edx, dword ptr [ebp - 0x10]
+            mov  eax, dword ptr [edx]
+            test eax, eax
+            jz   skip_null
+            mov  eax, dword ptr [eax + 0xc]
+            jmp  u0x674c3b
+        skip_null:
+            jmp  u0x674c59
+        }
+    }
+
     // -- Target HP view --
     namespace target_view
     {
@@ -1066,6 +1089,9 @@ void hook::patch()
         gNativeTextureCreateFromFileEx = create_texture_loader_trampoline();
     util::detour((void*)0x40DB00, texture_create_from_file_ex_png_hook, 7);
     util::detour((void*)0x57B560, create_texture_from_file_png, 5);
+
+    // -- World-load null guard (UI texture missing → NULL deref at 0x00674C38) --
+    util::detour((void*)0x00674c30, naked_0x674c30, 11);
 
     // -- Performance workarounds ---------------------------------------------
     // Costume lag

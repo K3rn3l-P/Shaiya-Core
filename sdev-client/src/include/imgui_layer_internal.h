@@ -461,6 +461,8 @@ namespace imgui_layer
     inline bool    g_killLvOverrideEnabled = false;
     inline int32_t g_killLvOverrideValue   = 0;
 
+    inline bool g_showMapEditor = false;
+
     // Stato rank icon — owned da rank_icon.cpp/rank_icon.h.
     // Accessibile tramite #include "rank_icon.h".
 
@@ -649,6 +651,9 @@ namespace imgui_layer
     void capture_character_layout_anchor(CCharacter* user, float x, float y, float extrusion);
     void draw_character_layout_debug_panel();
     std::string build_character_layout_dump();
+
+    // imgui_layer_map_editor.cpp
+    void draw_map_editor_panel();
 
     // imgui_layer_reward.cpp
     void draw_reward_bar();

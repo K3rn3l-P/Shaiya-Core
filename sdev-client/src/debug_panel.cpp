@@ -654,6 +654,7 @@ namespace debug_panel
         ImGui::Separator();
         ImGui::Checkbox("Roulette Layout Debug", &imgui_layer::g_showRouletteLayoutDebugPanel);
         ImGui::Checkbox("Character Visual Debug", &imgui_layer::g_showCharacterLayoutDebugPanel);
+        ImGui::Checkbox("World Map Editor", &imgui_layer::g_showMapEditor);
 
         ImGui::EndChild();
         ImGui::End();

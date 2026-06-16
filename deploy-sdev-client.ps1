@@ -47,11 +47,17 @@ Write-Host "[INFO] DLL: $([System.IO.Path]::GetFileName($DllPath))  SHA256=$sha2
 Write-Host "`n[UPLOAD] Invio sdev.dll → ${sshHost}:$serverFilesPath ..." -ForegroundColor Cyan
 
 # Assicura che la cartella Files esista sul server
-& ssh @sshOpts $sshHost "cmd /c if not exist C:\xampp\htdocs\Updater\Files mkdir C:\xampp\htdocs\Updater\Files" 2>$null
+$sshExe = (Get-Command ssh -ErrorAction SilentlyContinue)
+$scpExe = (Get-Command scp -ErrorAction SilentlyContinue)
 
-& scp @sshOpts $DllPath "${sshHost}:$serverFilesPath" 2>$null
-if ($LASTEXITCODE -ne 0) { Write-Host "[FAIL] Upload SCP fallito." -ForegroundColor Red; exit 1 }
-Write-Host "[OK] Upload completato." -ForegroundColor Green
+if (-not $sshExe -or -not $scpExe) {
+    Write-Host "[SKIP] ssh/scp non trovati nel PATH - upload saltato." -ForegroundColor Yellow
+} else {
+    & ssh @sshOpts $sshHost "cmd /c if not exist C:\xampp\htdocs\Updater\Files mkdir C:\xampp\htdocs\Updater\Files" 2>$null
+    & scp @sshOpts $DllPath "${sshHost}:$serverFilesPath" 2>$null
+    if ($LASTEXITCODE -ne 0) { Write-Host "[WARN] Upload SCP fallito (server non raggiungibile?)." -ForegroundColor Yellow }
+    else { Write-Host "[OK] Upload completato." -ForegroundColor Green }
+}
 
 # ---------------------------------------------------------------------------
 # 4. Copia in cartella client locale

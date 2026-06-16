@@ -45,6 +45,7 @@ namespace hook
     void command();
     void imgui_layer();
     void item_icon();
+    void map_editor();
     void name_color();
     void packet();
     void patch();

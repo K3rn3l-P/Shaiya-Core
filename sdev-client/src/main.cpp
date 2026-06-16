@@ -6,6 +6,7 @@ void Main()
     hook::command();
     hook::imgui_layer();
     hook::item_icon();
+    hook::map_editor();
     hook::name_color();
     hook::packet();
     hook::patch();

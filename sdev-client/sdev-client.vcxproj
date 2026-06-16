@@ -157,6 +157,7 @@
     <ClCompile Include="src\gm_commands_native.cpp" />
     <ClCompile Include="src\imgui_layer_asset_browser.cpp" />
     <ClCompile Include="src\imgui_layer_character_visual_debug.cpp" />
+    <ClCompile Include="src\imgui_layer_map_editor.cpp" />
     <ClCompile Include="src\imgui_layer_roulette_layout_debug.cpp" />
     <ClCompile Include="src\rank_icon.cpp" />
     <ClCompile Include="src\unicode.cpp" />
