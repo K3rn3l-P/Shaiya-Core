@@ -1,6 +1,7 @@
 #include <util/util.h>
 #include <algorithm>
 #include <cstring>
+#include "include/shaiya/CNetwork.h"
 #include <shaiya/include/network/game/outgoing/0800.h>
 #include <shaiya/include/network/game/outgoing/1F00.h>
 #include "include/main.h"
@@ -626,7 +627,6 @@ void __declspec(naked) naked_0x5F1E10()
         je teleport_packet
         cmp eax,0x839
         je teleport_packet
-
         popad
         mov edx,dword ptr [esp+0x4]
         movzx eax,dx
@@ -661,6 +661,44 @@ void __declspec(naked) naked_0x5F1E10()
 
         popad
         ret
+
+    }
+}
+
+// Hook a 0x5EC5D5 — dentro FUN_005ec5a0 (sender 0xA101 RSA).
+// Displaced: PUSH 0x83 (5 byte). EDX = &buf (opcode+key_size+RSA_key, 131 byte).
+// Appende token[4] a buf+131, cambia len 131→135 (0x87).
+// Server (hook 0x404548 in sdev-login) legge il token da [EBP+0x83] = iVar2+133.
+extern uint8_t g_sah_token[8];  // sah_decrypt.cpp: SHA256(game.exe)[0:8]
+extern void    wait_sah_token_3s(); // sah_decrypt.cpp: spinlock finché token pronto (max 3s)
+
+// Hook a 0x5EC5D5 — dentro FUN_005ec5a0 (sender 0xA101 RSA).
+// Displaced: PUSH 0x83 (5 byte). EDX = &buf (opcode+key_size+RSA_key, 131 byte).
+// Appende auth_token[4] a buf+131 e sah_token[8] a buf+135, cambia len 131→143 (0x8F).
+// Server (hook 0x404548 in sdev-login) legge auth_token da [EBP+0x83], sah_token da [EBP+0x87].
+// wait_sah_token_3s() garantisce che il decrypt sia completato prima di leggere g_sah_token.
+unsigned u0x5EC5DA = 0x5EC5DA;
+void __declspec(naked) naked_0x5EC5D5()
+{
+    __asm
+    {
+        pushad
+        // pushad frame: [esp+0]=EDI [esp+4]=ESI [esp+8]=EBP [esp+12]=ESP_orig
+        //               [esp+16]=EBX [esp+20]=EDX [esp+24]=ECX [esp+28]=EAX
+        call wait_sah_token_3s         // blocca finché g_sah_token_ready (cdecl, no args)
+        call shaiya::CNetwork::ComputeToken   // EAX = HMAC token (cdecl, no args)
+        mov  ecx, eax                          // salva auth token in ECX
+        mov  edx, dword ptr [esp + 20]         // EDX = &buf
+        mov  dword ptr [edx + 131], ecx        // auth token → buf[131..134]
+        // SAH token (8 byte): g_sah_token → buf[135..142]
+        lea  edi, [edx + 135]
+        mov  eax, dword ptr [g_sah_token]
+        mov  dword ptr [edi], eax
+        mov  eax, dword ptr [g_sah_token + 4]
+        mov  dword ptr [edi + 4], eax
+        popad
+        push 0x8F          // len = 143 (131 + 4 auth_token + 8 sah_token)
+        jmp  u0x5EC5DA
     }
 }
 
@@ -669,6 +707,8 @@ void hook::packet()
     // Increase the buy/sell item quantity limit from 10 to 255.
     packet::patch_quantity_limit();
     // Custom roulette packets are consumed before the stock dispatcher can drop them.
+    // 0xA101 RSA handshake send: appende token dopo chiave RSA (131→135 byte)
+    util::detour((void*)0x5EC5D5, naked_0x5EC5D5, 5);
     util::detour((void*)0x5F1E10, naked_0x5F1E10, 7);
     // disguise removal bug (0x303 handler)
     util::detour((void*)0x5933F8, naked_0x5933F8, 6);

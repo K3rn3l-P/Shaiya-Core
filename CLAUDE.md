@@ -200,6 +200,67 @@ variabili namespace da inline ASM direttamente).
 
 ---
 
+## Mappe Shaiya — Formato e Alpha DDS
+
+**Riferimento**: https://github.com/matigramirez/Parsec (Parsec + Unity World Editor by Mati)
+
+### File che compongono una mappa
+
+| File | Posizione client | Note |
+|---|---|---|
+| `{mapId}.wld` | `Data\World\` | Terrain heights, texture layers, entities, portals… |
+| Alpha DDS | `Data\World\Field\{mapId}\` | Peso blend per ogni layer terreno (una per patch×layer) |
+| Light DDS | `Data\World\Field\{mapId}\` | Lightmap per ogni patch |
+| `.svmap` | — | Dati navigazione/spawn (server) |
+| `.zon` | — | Zone definitions |
+
+### Alpha DDS — formato verificato
+
+- **Nome file**: `{mapId}_{row}{col}_A{layerIndex}.dds` → es. `2_00_A0.dds`
+- **Formato**: **DXT3** (BC2) — CONFERMATO dai file originali mappa 2
+- **Dimensioni**: 256×256 pixel, 9 mip levels
+- **Payload totale**: 87408 byte (header DDS = 128 byte → file totale = 87536 byte)
+- **Struttura DXT3 block** (16 byte per blocco 4×4):
+  - Byte 0-7: alpha a 4-bit per pixel (16 nibbles packed, usato per il blend weight)
+  - Byte 8-15: color block DXT1 (RGB565)
+- Percorso corretto: `Data\World\Field\{mapId}\` (**NON** `Data\Field\{mapId}\`)
+
+### Alpha DDS — semantica dei layer
+
+- Ogni patch ha una DDS per ogni texture layer (A0, A1, A2…)
+- Il valore alpha (0-15 in DXT3, 0=trasparente, 15=opaco) = quanto quel layer è visibile nella cella
+- Max layer originali Shaiya: **8**
+- Brush size consigliato (Unity/tool): **≥ 8** — valori più piccoli si perdono per via della bassa risoluzione delle alpha
+
+### Patch layout (mappa 2)
+
+- `M = *(int*)(0x7C4A74 + 4)` = patch per lato = **2** per mappa 2
+- `N = 1025` → `cellsPerPatch = (N-1)/M = 512`
+- Patch naming: `{row}{col}` con row/col da 0 a M-1 → `00`, `01`, `10`, `11`
+
+### Mip chain DXT3 256×256 (9 mip)
+
+```
+Mip 0: 64×64 blocks × 16B = 65536 B
+Mip 1: 32×32 × 16B        = 16384 B
+Mip 2: 16×16 × 16B        =  4096 B
+Mip 3:  8×8  × 16B        =  1024 B
+Mip 4:  4×4  × 16B        =   256 B
+Mip 5:  2×2  × 16B        =    64 B
+Mip 6:  1×1  × 16B        =    16 B
+Mip 7:  1×1  × 16B        =    16 B  (min 1 block)
+Mip 8:  1×1  × 16B        =    16 B
+Totale                     = 87408 B
+```
+
+### Errori noti / bug corretti
+
+- Bug precedente: leggeva 65536 byte come pixel L8 lineari → scriveva DDS corrotto 65KB → terreno bianco
+- Fix: legge 87408 byte DXT3 completi, modifica alpha nibbles nei blocchi corretti, riscrive file intero
+- `srcDir` corretto: `{dllDir}\Data\World\Field\{mapId}\` (il DLL è nella root del client)
+
+---
+
 ## Aggiungere un nuovo pannello debug
 
 1. Aggiungere la funzione `draw_*_section()` in `imgui_layer_character_visual_debug.cpp`

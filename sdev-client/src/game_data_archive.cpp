@@ -8,6 +8,9 @@
 #include <fstream>
 #include <iterator>
 
+// Defined in sah_decrypt.cpp; populated by hook::sah_decrypt_init() if data.sah is ESAH.
+extern std::vector<char> g_sah_plain;
+
 namespace game_data
 {
     namespace
@@ -139,13 +142,21 @@ namespace game_data
         if (!visitor)
             return false;
 
-        std::ifstream stream(relative_path("data.sah"), std::ios::binary);
-        if (!stream)
-            return false;
+        std::vector<char> data;
 
-        std::vector<char> data(
-            (std::istreambuf_iterator<char>(stream)),
-            std::istreambuf_iterator<char>());
+        if (!g_sah_plain.empty())
+        {
+            // Use in-memory decrypted buffer (ESAH was decrypted at DllMain by sah_decrypt_init)
+            data = g_sah_plain;
+        }
+        else
+        {
+            std::ifstream stream(relative_path("data.sah"), std::ios::binary);
+            if (!stream)
+                return false;
+            data.assign(std::istreambuf_iterator<char>(stream), {});
+        }
+
         if (data.size() <= 0x34 || std::memcmp(data.data(), "SAH", 3) != 0)
             return false;
 

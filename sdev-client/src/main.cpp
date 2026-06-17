@@ -2,32 +2,20 @@
 
 void Main()
 {
-    hook::blacksmith();
-    hook::camera_limit();
-    hook::character();
+    hook::sah_decrypt_init();
     hook::command();
-    hook::custom_game();
-    hook::discord();
-    hook::equipment();
-    hook::client_features();
-    hook::exp_view();
     hook::imgui_layer();
-    hook::input();
     hook::item_icon();
-    hook::main_stats();
+    hook::map_editor();
     hook::name_color();
-    hook::npc_button();
     hook::packet();
     hook::patch();
     hook::quick_slot();
     hook::raid();
     hook::resolutions();
     hook::select_screen();
-    hook::target_view();
     hook::title();
-    hook::ui_image();
-    hook::unicode();
     hook::vehicle();
-    hook::weapon_step();
     hook::window();
+    init_discord_rpc();
 }

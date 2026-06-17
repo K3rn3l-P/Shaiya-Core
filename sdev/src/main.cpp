@@ -27,7 +27,6 @@ void user_hook(CUser* user)
     user->etainLastPos = {};
     user->etainLastMoveTick = 0;
     user->etainViolationCount = 0;
-    user->etainCuttingUntil = 0;
 }
 
 unsigned u0x45516B = 0x45516B;
@@ -108,6 +107,7 @@ void Main()
     // SSyncHeap<CUser>::Alloc
     util::write_memory((void*)0x411F74, &size, 4);
 
+    hook::connection_guard();
     hook::etain_shield();
     hook::item_effect();
     hook::utilities();

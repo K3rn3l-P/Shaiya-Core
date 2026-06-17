@@ -44,4 +44,5 @@ namespace hook
     void user_shape();
     void user_status();
     void world_thread();
+    void connection_guard();
 }

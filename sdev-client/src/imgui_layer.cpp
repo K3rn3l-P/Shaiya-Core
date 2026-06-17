@@ -72,7 +72,8 @@ namespace imgui_layer
             return custom_gm_panel::is_open()
                 || debug_panel::is_open()
                 || g_showRouletteLayoutDebugPanel
-                || g_showCharacterLayoutDebugPanel;
+                || g_showCharacterLayoutDebugPanel
+                || g_showMapEditor;
         }
 
         bool should_capture_gm_input()
@@ -101,11 +102,17 @@ namespace imgui_layer
         if (g_imguiInitialized && ImGui::GetCurrentContext())
         {
             auto& io = ImGui::GetIO();
-            if (should_capture_gm_input() && io.WantCaptureMouse && cbData >= sizeof(DIMOUSESTATE2))
+            if (cbData >= sizeof(DIMOUSESTATE2))
             {
                 auto* ms = static_cast<DIMOUSESTATE2*>(lpvData);
-                ms->rgbButtons[0] = 0;   // left button
-                ms->rgbButtons[1] = 0;   // right button
+                if (g_showMapEditor) {
+                    // Map editor aperto: blocca solo click sinistro al gioco
+                    // Tasto destro e rotellina rimangono liberi (camera rotation + zoom)
+                    ms->rgbButtons[0] = 0;
+                } else if (should_capture_gm_input() && io.WantCaptureMouse) {
+                    ms->rgbButtons[0] = 0;
+                    ms->rgbButtons[1] = 0;
+                }
             }
         }
 
@@ -126,8 +133,17 @@ namespace imgui_layer
         if (FAILED(hr) || !lpvData)
             return hr;
 
-        if (g_imguiInitialized && ImGui::GetCurrentContext() && should_capture_gm_input())
-            std::memset(lpvData, 0, cbData);
+        if (g_imguiInitialized && ImGui::GetCurrentContext())
+        {
+            auto& io = ImGui::GetIO();
+            // Map editor: blocca tastiera solo se ImGui ha un campo testo attivo
+            // (WASD/hotkey rimangono liberi; typing in search box blocca il gioco)
+            bool blockKb = g_showMapEditor
+                ? io.WantCaptureKeyboard
+                : should_capture_gm_input();
+            if (blockKb)
+                std::memset(lpvData, 0, cbData);
+        }
 
         return hr;
     }
@@ -753,6 +769,7 @@ namespace imgui_layer
         load_settings_icon_texture();
         load_npc_icon_texture();
         load_teleport_icon_texture();
+        load_window_bg_texture();
         rank_icon::tick();
 
         // When the native UI is hidden (F11), suppress all overlay drawing
@@ -789,6 +806,7 @@ namespace imgui_layer
             custom_chat::render_ingame_chat();
             draw_roulette_layout_debug_panel();
             draw_character_layout_debug_panel();
+            draw_map_editor_panel();
 
             if (g_showPanel)
                 draw_panel_shell();

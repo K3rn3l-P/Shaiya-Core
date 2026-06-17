@@ -1,469 +1,58 @@
 #include <array>
-#include <cstring>
-#include <cstdio>
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
-#include <bcrypt.h>
 #include <sql.h>
 #include <sqlext.h>
-#pragma comment(lib, "bcrypt.lib")
+#include <unordered_map>
+#include <string>
+#include <mutex>
+#include <cstring>
+#include <cstdio>
 #include <util/util.h>
+#include "include/gm_security.h"
+#include "include/login_logger.h"
 #include "include/main.h"
 #include "include/shaiya/SDatabase.h"
 using namespace shaiya;
 
 // ===========================================================================
-// GM Security — IP-based login restriction for admin accounts
+// Per-IP login brute force guard
 // ===========================================================================
-//
-// Every account with admin privileges MUST have an entry in
-// Data/GMSecurity.ini to log in.  This is fail-closed:
-//
-//   - GM in INI + IP matches          → login proceeds
-//   - GM in INI + IP mismatch         → login rejected
-//   - GM NOT in INI                   → login rejected
-//   - Normal account (not in INI)     → login proceeds
-//
-// ---- Two-stage verification ----
-//
-//   Stage 1 — INI pre-check (instant, no DB):
-//     If the username exists in [IP_WHITELIST], the connecting IP must
-//     match one of the listed addresses.
-//
-//   Stage 2 — DB admin check (lightweight SELECT via SDatabase):
-//     If the username is NOT in the INI, query Users_Master for admin
-//     indicators.  An account is admin if ANY of:
-//       - Admin != 0       (bit:  master admin flag)
-//       - AdminLevel > 0   (tinyint: GM permission tier)
-//       - Status > 0       (smallint: account type, 0=normal, >0=GM)
-//     If admin → login rejected.  An unlisted GM can never authenticate.
-//
-//     Uses the same SDatabase::PrepareSql/ExecuteSql path as the login
-//     stored procedure (proven to work), then closes the cursor before
-//     the real login query runs.
-//
-// ---- Configuration file ----
-//
-//   Data/GMSecurity.ini  (relative to ps_login.exe directory)
-//
-//   [SETTINGS]
-//   Enabled=1          ; 0 = feature off, 1 = feature on
-//
-//   [IP_WHITELIST]
-//   username=ip1,ip2,ip3
-//
-// ---- Security properties ----
-//
-//   - Fail-closed: unlisted GMs are blocked, not allowed.
-//   - Pre-authentication: blocked GMs never reach the login SP.
-//   - Parameterized DB query: immune to SQL injection.
-//   - Invisible: blocked login = same error as wrong password.
-//   - Stage 2 fail-open: if the DB pre-check fails, login proceeds
-//     to the stored procedure (prevents broken config from DOS-ing
-//     the server).  Stage 1 is always enforced.
-//   - GMSecurity.ini MUST be protected by OS-level ACLs.
-//
-// ===========================================================================
-
-namespace
+namespace login_guard
 {
-    constexpr const char* kIniFileName = "Data\\GMSecurity.ini";
-    constexpr const char* kIniSection  = "IP_WHITELIST";
-    constexpr const char* kSettingsSection = "SETTINGS";
-    constexpr int kMaxUsernameLen = 32;
+    static constexpr int   MAX_FAILS  = 5;
+    static constexpr DWORD WINDOW_MS  = 600000; // 10 minuti sliding window
 
-    // --- Path resolution ---
+    struct Entry { int fails; DWORD first_fail; };
+    static std::unordered_map<std::string, Entry> g_fails;
+    static std::mutex g_mtx;
 
-    const char* get_ini_path()
+    static bool is_allowed(const char* ip)
     {
-        static char path[MAX_PATH]{};
-        static bool resolved = false;
-
-        if (!resolved)
-        {
-            resolved = true;
-
-            DWORD len = GetModuleFileNameA(nullptr, path, MAX_PATH);
-            if (len == 0 || len >= MAX_PATH)
-            {
-                path[0] = '\0';
-                return path;
-            }
-
-            char* lastSlash = std::strrchr(path, '\\');
-            if (!lastSlash)
-            {
-                path[0] = '\0';
-                return path;
-            }
-            *(lastSlash + 1) = '\0';
-            strcat_s(path, MAX_PATH, kIniFileName);
-        }
-        return path;
+        auto now = GetTickCount();
+        std::lock_guard<std::mutex> lk(g_mtx);
+        auto it = g_fails.find(ip);
+        if (it == g_fails.end()) return true;
+        auto& e = it->second;
+        if (now - e.first_fail > WINDOW_MS) { g_fails.erase(it); return true; }
+        return e.fails < MAX_FAILS;
     }
 
-    // --- Feature toggle / Token secret ---
-
-    // Reads [SETTINGS] Enabled from the INI.  Returns false if the key
-    // is missing, the file is absent, or the value is 0.  Any non-zero
-    // value (typically 1) enables GM Security.  Re-read on every login
-    // so the admin can toggle without restarting ps_login.exe.
-    bool is_feature_enabled()
+    static void on_fail(const char* ip)
     {
-        const char* iniPath = get_ini_path();
-        if (!iniPath[0])
-            return false;
-
-        return GetPrivateProfileIntA(kSettingsSection, "Enabled", 0, iniPath) != 0;
+        auto now = GetTickCount();
+        std::lock_guard<std::mutex> lk(g_mtx);
+        auto& e = g_fails[ip];
+        if (e.fails == 0 || now - e.first_fail > WINDOW_MS) { e.first_fail = now; e.fails = 1; }
+        else e.fails++;
     }
 
-    // Reads [SETTINGS] TokenSecret from GMSecurity.ini.
-    // Must match token_secret in PHP config. Empty = token auth disabled.
-    const char* get_token_secret()
+    static void on_success(const char* ip)
     {
-        static char secret[128]{};
-        static bool loaded = false;
-        if (!loaded)
-        {
-            loaded = true;
-            GetPrivateProfileStringA(kSettingsSection, "TokenSecret", "",
-                                     secret, sizeof(secret), get_ini_path());
-        }
-        return secret;
+        std::lock_guard<std::mutex> lk(g_mtx);
+        g_fails.erase(ip);
     }
-
-    // --- Stage 1: INI whitelist check ---
-
-    // Returns:
-    //   +1 = username in INI, IP matches (allow, skip Stage 2)
-    //   -1 = username in INI, IP mismatch (block)
-    //    0 = username not in INI (need Stage 2)
-    int check_whitelist_ip(const char* username, const char* ipv4)
-    {
-        if (!username || !username[0] || !ipv4 || !ipv4[0])
-            return 0;
-
-        const char* iniPath = get_ini_path();
-        if (!iniPath[0])
-            return 0;
-
-        char safeUser[kMaxUsernameLen + 1]{};
-        strncpy_s(safeUser, username, kMaxUsernameLen);
-
-        constexpr const char* kNotFound = "\x01";
-
-        char allowedIps[512]{};
-        GetPrivateProfileStringA(
-            kIniSection, safeUser, kNotFound,
-            allowedIps, sizeof(allowedIps), iniPath);
-
-        if (std::strcmp(allowedIps, kNotFound) == 0)
-            return 0;   // Not in INI.
-
-        if (allowedIps[0] == '\0')
-            return -1;  // In INI but empty value — no IPs authorized.
-
-        const char* p = allowedIps;
-        auto ipLen = std::strlen(ipv4);
-
-        while (*p)
-        {
-            while (*p == ',' || *p == ' ' || *p == '\t')
-                ++p;
-            if (*p == '\0')
-                break;
-
-            const char* tokenStart = p;
-            while (*p != '\0' && *p != ',' && *p != ' ' && *p != '\t')
-                ++p;
-            auto tokenLen = static_cast<std::size_t>(p - tokenStart);
-
-            if (tokenLen == ipLen &&
-                std::strncmp(tokenStart, ipv4, tokenLen) == 0)
-                return +1;  // IP matches.
-        }
-
-        return -1;  // In INI, no IP matched.
-    }
-
-    // --- Stage 2: DB admin check ---
-
-    // Query Users_Master via SDatabase (same path as the login SP).
-    // Returns true if the account has any admin flag set:
-    //   - Admin  != 0   (bit:  master admin flag)
-    //   - AdminLevel > 0 (tinyint: GM permission tier, 0 = normal)
-    //   - Status > 0     (smallint: account type, 0 = normal)
-    // Returns false if normal user, not found, or query fails (fail-open
-    // for Stage 2 — broken config must not DOS the whole server).
-    bool is_db_admin_account(SDatabase* db, const char* username)
-    {
-        if (!db || !username || !username[0])
-            return false;
-
-        const char* query =
-            "SELECT TOP 1 [Admin], [AdminLevel], [Status] "
-            "FROM [PS_UserData].[dbo].[Users_Master] "
-            "WHERE [UserID] = ?";
-
-        if (SDatabase::PrepareSql(db, query))
-            return false;
-
-        char user[kMaxUsernameLen + 1]{};
-        strncpy_s(user, username, kMaxUsernameLen);
-
-        if (SDatabase::BindParameter(db, 1, kMaxUsernameLen,
-                SQL_C_CHAR, SQL_VARCHAR, user, nullptr, SQL_PARAM_INPUT))
-        {
-            SQLFreeStmt(db->stmt, SQL_CLOSE);
-            SQLFreeStmt(db->stmt, SQL_RESET_PARAMS);
-            return false;
-        }
-
-        if (SDatabase::ExecuteSql(db))
-        {
-            SQLFreeStmt(db->stmt, SQL_CLOSE);
-            SQLFreeStmt(db->stmt, SQL_RESET_PARAMS);
-            return false;
-        }
-
-        bool isAdmin = false;
-        auto fetchRc = SQLFetch(db->stmt);
-
-        if (fetchRc == SQL_SUCCESS)
-        {
-            // Col 1: Admin (bit → SQLCHAR: 0 or 1)
-            unsigned char adminFlag = 0;
-            SQLLEN ind1 = 0;
-            SQLGetData(db->stmt, 1, SQL_C_UTINYINT, &adminFlag, sizeof(adminFlag), &ind1);
-
-            // Col 2: AdminLevel (tinyint → SQLCHAR: 0–255)
-            unsigned char adminLevel = 0;
-            SQLLEN ind2 = 0;
-            SQLGetData(db->stmt, 2, SQL_C_UTINYINT, &adminLevel, sizeof(adminLevel), &ind2);
-
-            // Col 3: Status (smallint → SQLSMALLINT: 0–32767)
-            short status = 0;
-            SQLLEN ind3 = 0;
-            SQLGetData(db->stmt, 3, SQL_C_SSHORT, &status, sizeof(status), &ind3);
-
-            isAdmin = (adminFlag != 0) || (adminLevel > 0) || (status > 0);
-        }
-
-        SQLFreeStmt(db->stmt, SQL_CLOSE);
-        SQLFreeStmt(db->stmt, SQL_RESET_PARAMS);
-
-        return isAdmin;
-    }
-
-    // --- PBKDF2 helpers ---
-
-    // Decodes a hex string of exactly hex_len chars into out (out_len bytes).
-    bool hex_decode(const char* hex, size_t hex_len, unsigned char* out, size_t out_len)
-    {
-        if (hex_len != out_len * 2)
-            return false;
-
-        auto from_hex = [](unsigned char c) -> int {
-            if (c >= '0' && c <= '9') return c - '0';
-            if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-            if (c >= 'A' && c <= 'F') return c - 'A' + 10;
-            return -1;
-        };
-
-        for (size_t i = 0; i < out_len; i++)
-        {
-            int hi = from_hex(static_cast<unsigned char>(hex[i * 2]));
-            int lo = from_hex(static_cast<unsigned char>(hex[i * 2 + 1]));
-            if (hi < 0 || lo < 0)
-                return false;
-            out[i] = static_cast<unsigned char>((hi << 4) | lo);
-        }
-        return true;
-    }
-
-    // Queries Enpassword for @username into out[out_size].
-    // Returns true on success (SQL NULL → out[0]=='\0'). Returns false on DB error.
-    bool get_enpassword(SDatabase* db, const char* username, char* out, int out_size)
-    {
-        const char* query =
-            "SELECT TOP 1 Enpassword "
-            "FROM [PS_UserData].[dbo].[Users_Master] "
-            "WHERE UserID = ?";
-
-        if (SDatabase::PrepareSql(db, query))
-            return false;
-
-        char user[kMaxUsernameLen + 1]{};
-        strncpy_s(user, username, kMaxUsernameLen);
-
-        if (SDatabase::BindParameter(db, 1, kMaxUsernameLen,
-                SQL_C_CHAR, SQL_VARCHAR, user, nullptr, SQL_PARAM_INPUT))
-        {
-            SQLFreeStmt(db->stmt, SQL_CLOSE);
-            SQLFreeStmt(db->stmt, SQL_RESET_PARAMS);
-            return false;
-        }
-
-        if (SDatabase::ExecuteSql(db))
-        {
-            SQLFreeStmt(db->stmt, SQL_CLOSE);
-            SQLFreeStmt(db->stmt, SQL_RESET_PARAMS);
-            return false;
-        }
-
-        out[0] = '\0';
-        SQLRETURN rc = SQLFetch(db->stmt);
-        if (rc == SQL_SUCCESS || rc == SQL_SUCCESS_WITH_INFO)
-        {
-            SQLLEN indicator = 0;
-            SQLGetData(db->stmt, 1, SQL_C_CHAR, out, out_size, &indicator);
-            if (indicator == SQL_NULL_DATA)
-                out[0] = '\0';
-        }
-
-        SQLFreeStmt(db->stmt, SQL_CLOSE);
-        SQLFreeStmt(db->stmt, SQL_RESET_PARAMS);
-        return true;
-    }
-
-    // Verifies a PBKDF2-SHA256 stored hash against a plaintext password.
-    // Format: "pbkdf2sha256:<iterations>:<32hex_salt>:<64hex_hash>"
-    // Uses Windows CNG (bcrypt.lib) — zero external dependencies.
-    bool verify_pbkdf2(const char* stored, const char* password)
-    {
-        constexpr const char* kPrefix    = "pbkdf2sha256:";
-        constexpr size_t      kPrefixLen = 13;
-        constexpr size_t      kSaltBytes = 16;
-        constexpr size_t      kHashBytes = 32;
-
-        if (!stored || std::strncmp(stored, kPrefix, kPrefixLen) != 0)
-            return false;
-
-        const char* p = stored + kPrefixLen;
-
-        char* end = nullptr;
-        unsigned long iterations = std::strtoul(p, &end, 10);
-        if (!end || *end != ':' || iterations == 0 || iterations > 2000000UL)
-            return false;
-        p = end + 1;
-
-        const char* colon = std::strchr(p, ':');
-        if (!colon || static_cast<size_t>(colon - p) != kSaltBytes * 2)
-            return false;
-
-        unsigned char salt[kSaltBytes]{};
-        if (!hex_decode(p, kSaltBytes * 2, salt, kSaltBytes))
-            return false;
-        p = colon + 1;
-
-        if (std::strlen(p) != kHashBytes * 2)
-            return false;
-
-        unsigned char expected[kHashBytes]{};
-        if (!hex_decode(p, kHashBytes * 2, expected, kHashBytes))
-            return false;
-
-        BCRYPT_ALG_HANDLE hAlg = nullptr;
-        NTSTATUS status = BCryptOpenAlgorithmProvider(
-            &hAlg, BCRYPT_SHA256_ALGORITHM, nullptr, BCRYPT_ALG_HANDLE_HMAC_FLAG);
-        if (!BCRYPT_SUCCESS(status))
-            return false;
-
-        unsigned char computed[kHashBytes]{};
-        status = BCryptDeriveKeyPBKDF2(
-            hAlg,
-            reinterpret_cast<PUCHAR>(const_cast<char*>(password)),
-            static_cast<ULONG>(std::strlen(password)),
-            salt, static_cast<ULONG>(kSaltBytes),
-            static_cast<ULONGLONG>(iterations),
-            computed, static_cast<ULONG>(kHashBytes),
-            0);
-
-        BCryptCloseAlgorithmProvider(hAlg, 0);
-
-        if (!BCRYPT_SUCCESS(status))
-            return false;
-
-        // Timing-safe compare
-        volatile int diff = 0;
-        for (size_t i = 0; i < kHashBytes; i++)
-            diff |= computed[i] ^ expected[i];
-
-        return diff == 0;
-    }
-
-    // Verifies a time-windowed HMAC-SHA256 token (saved-account login path).
-    // PHP computes: HMAC-SHA256(secret, "username:window")[0:16] as lowercase hex.
-    // window = floor(unix_utc / 300)  →  5-minute granularity.
-    // Checks current window and previous (handles boundary edge-cases).
-    // No SQL or DB access — pure CNG (bcrypt.lib already linked for PBKDF2).
-    bool verify_hmac_token(const char* username, const char* token)
-    {
-        if (!token || !username) return false;
-
-        const char* secret = get_token_secret();
-
-        if (!secret || !secret[0]) return false;
-
-        for (int i = 0; i < 15; i++)
-        {
-            char c = token[i];
-            if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')))
-                return false;
-        }
-
-        FILETIME ft;
-        GetSystemTimeAsFileTime(&ft);
-        ULARGE_INTEGER uli;
-        uli.LowPart  = ft.dwLowDateTime;
-        uli.HighPart = ft.dwHighDateTime;
-        ULONGLONG unixSecs = (uli.QuadPart - 116444736000000000ULL) / 10000000ULL;
-        unsigned int window = (unsigned int)(unixSecs / 300);
-
-        for (int w = 0; w <= 1; w++)
-        {
-            char data[96]{};
-            std::snprintf(data, sizeof(data), "%s:%u",
-                          username, window - (unsigned int)w);
-
-            BCRYPT_ALG_HANDLE  hAlg  = nullptr;
-            BCRYPT_HASH_HANDLE hHash = nullptr;
-            BYTE hash[32]{};
-            bool computed = false;
-
-            if (BCryptOpenAlgorithmProvider(&hAlg, BCRYPT_SHA256_ALGORITHM, nullptr,
-                    BCRYPT_ALG_HANDLE_HMAC_FLAG) == 0)
-            {
-                if (BCryptCreateHash(hAlg, &hHash, nullptr, 0,
-                        reinterpret_cast<PUCHAR>(const_cast<char*>(secret)),
-                        static_cast<ULONG>(std::strlen(secret)), 0) == 0)
-                {
-                    if (BCryptHashData(hHash,
-                            reinterpret_cast<PUCHAR>(data),
-                            static_cast<ULONG>(std::strlen(data)), 0) == 0)
-                        computed = (BCryptFinishHash(hHash, hash, 32, 0) == 0);
-                }
-            }
-
-            if (hHash) BCryptDestroyHash(hHash);
-            if (hAlg)  BCryptCloseAlgorithmProvider(hAlg, 0);
-
-            if (!computed) continue;
-
-            char expected[17]{};
-            std::snprintf(expected, sizeof(expected),
-                "%02x%02x%02x%02x%02x%02x%02x%02x",
-                hash[0], hash[1], hash[2], hash[3],
-                hash[4], hash[5], hash[6], hash[7]);
-
-            if (memcmp(token, expected, 15) == 0)
-                return true;
-        }
-
-        return false;
-    }
-
-} // anonymous namespace
+}
 
 // ===========================================================================
 // Login hook
@@ -471,45 +60,32 @@ namespace
 
 short hook_0x406A8C(SDatabase* db, char* username, char* password, unsigned lowPart, unsigned highPart, char* ipv4)
 {
-    // Feature toggle: [SETTINGS] Enabled=1 in GMSecurity.ini.
-    // When disabled (0 or missing), skip all GM checks — every account
-    // goes straight to the login stored procedure.
-    if (is_feature_enabled())
+    if (!login_guard::is_allowed(ipv4))
     {
-        // Stage 1: INI whitelist (instant, no DB)
-        int whitelistResult = check_whitelist_ip(username, ipv4);
-
-        if (whitelistResult == -1)
-            return -1;  // Listed GM, wrong IP.
-
-        if (whitelistResult == 0)
-        {
-            // Stage 2: not in INI — check DB for admin status.
-            // If admin → block (unlisted GM, fail-closed).
-            if (is_db_admin_account(db, username))
-                return -1;
-        }
+        login_logger::log_fail(ipv4, username, "BRUTE_FORCE_BLOCKED");
+        return -1;
     }
 
-    // Authorized GM (+1) or normal user (0, not admin) — proceed.
+    if (!gm_security::is_login_allowed(db, username, ipv4))
+    {
+        login_logger::log_fail(ipv4, username, "WHITELIST_DENIED");
+        return -1;
+    }
 
     ULARGE_INTEGER sessionId{ lowPart, highPart };
     std::array<char, 1024> buffer{};
 
     int argonResult = 0;
 
-    if (verify_hmac_token(username, password))
+    if (!gm_security::verify_password(db, username, password, &argonResult))
     {
-        argonResult = 1;
+        login_guard::on_fail(ipv4);
+        login_logger::log_fail(ipv4, username, "PASSWORD_FAIL");
+        return -1;
     }
-    else
-    {
-        char enpassword[256]{};
-        get_enpassword(db, username, enpassword, sizeof(enpassword));
-        if (enpassword[0] == '\0')
-            return -1;
-        argonResult = verify_pbkdf2(enpassword, password) ? 1 : 0;
-    }
+
+    login_guard::on_success(ipv4);
+    login_logger::log_ok(ipv4, username);
 
     std::snprintf(buffer.data(), buffer.size(),
         "EXEC [PS_UserData].[dbo].[usp_Try_GameLogin_Taiwan]"
@@ -586,10 +162,114 @@ void __declspec(naked) naked_0x404E84()
     }
 }
 
+// Estrae l'IPv4 da CUser* (SConnection::address.ipv4 a offset 0x70 da CUser*).
+// SInternetAddress::ipv4 è in network byte order → b[0].b[1].b[2].b[3] è corretto.
+static void cuser_get_ip(const void* cuser, char out[16])
+{
+    if (!cuser) { out[0] = '?'; out[1] = '\0'; return; }
+    uint32_t raw = 0;
+    std::memcpy(&raw, static_cast<const char*>(cuser) + 0x70, 4);
+    const auto* b = reinterpret_cast<const uint8_t*>(&raw);
+    std::snprintf(out, 16, "%d.%d.%d.%d", b[0], b[1], b[2], b[3]);
+}
+
+// Verifica auth_token + game_hash e logga il motivo del fallimento con IP.
+// Chiamato da naked_0x404548; cuser_ptr = EDI = CUser*.
+static bool verify_a101_and_log(uint32_t auth_token, const uint8_t* game_hash, const void* cuser_ptr)
+{
+    char ip[16];
+    cuser_get_ip(cuser_ptr, ip);
+
+    if (!gm_security::verify_rsa_client_token(auth_token))
+    {
+        login_logger::log_fail(ip, "-", "TOKEN_INVALID (client non autorizzato)");
+        return false;
+    }
+    if (!gm_security::verify_sah_token(game_hash))
+    {
+        login_logger::log_fail(ip, "-", "GAME_HASH_INVALID (game.exe modificato)");
+        return false;
+    }
+    return true;
+}
+
+// Hook at 0x404548 — 0xA101 (RSA handshake) handler.
+// Punto: dopo il check key_size==0x80, prima di processare la chiave RSA.
+// At entry: EBP = iVar2+2, AL = 0x80, EDI = this (CUser*).
+// Client invia auth_token[4] a [EBP+0x83] (iVar2+133) + sah_token[8] a [EBP+0x87] (iVar2+137).
+// Se token invalido → FUN_00410190(this,9,0) = disconnect prima del login.
+// Displaced: ADD EBP,3 (3) + PUSH EBP (1) + MOVZX ECX,AL (3) = 7 bytes.
+unsigned u0x40454f = 0x40454f;
+unsigned u0x404555 = 0x404555;
+void __declspec(naked) naked_0x404548()
+{
+    __asm
+    {
+        pushad
+
+        // verify_a101_and_log(uint32_t auth_token, const uint8_t* game_hash, const void* cuser_ptr)
+        // cdecl: push last arg first
+        push edi                           // cuser_ptr (3° arg) — EDI = this (CUser*)
+        lea  eax, [ebp + 0x87]
+        push eax                           // game_hash (2° arg) — &buf[135]
+        mov  eax, dword ptr [ebp + 0x83]
+        push eax                           // auth_token (1° arg) — buf[131..134]
+        call verify_a101_and_log
+        add  esp, 12
+        test al, al
+        jz   _reject
+
+        popad
+        // Displaced: ADD EBP,3; PUSH EBP; MOVZX ECX,AL (AL=0x80 preserved by popad)
+        add  ebp, 3
+        push ebp
+        movzx ecx, al
+        jmp  u0x40454f          // → PUSH EBX; CALL FUN_00404e60
+
+        _reject:
+        popad
+        push 0
+        push 9
+        mov  ecx, edi           // this (__thiscall)
+        mov  eax, 0x00410190
+        call eax                // FUN_00410190(this, 9, 0) — disconnect
+        jmp  u0x404555          // exit (LeaveCriticalSection)
+    }
+}
+
+// Hook at 0x4043BC — 0xA202 handler, after precondition checks.
+// [EBP+3] = server IPv4 echoed by client (uint32_t, little-endian).
+// Custom client sends (serverIP ^ token); hook XORs back to restore original IP
+// before FUN_00407400 uses it for server-list lookup.
+// Stock client sends raw IP → XOR corrupts it → lookup fails → natural reject.
+// Displaced: LEA EDX,[ESP+0x14] + LEA ESI,[ESP+0x34] = 8 bytes.
+unsigned u0x4043C4 = 0x4043C4;
+void __declspec(naked) naked_0x4043BC()
+{
+    __asm
+    {
+        pushad
+
+        call gm_security::get_client_auth_token   // EAX = token (no args, cdecl)
+        xor  dword ptr [ebp + 3], eax             // un-XOR server IP in-place
+
+        popad
+
+        // displaced instructions (ESP restored by popad)
+        lea edx, [esp + 0x14]
+        lea esi, [esp + 0x34]
+        jmp  u0x4043C4
+    }
+}
+
 void Main()
 {
     // GetUser (GM Security)
     util::detour((void*)0x406A8C, naked_0x406A8C, 7);
     // CUserCrypto::KeyInit
     util::detour((void*)0x404E84, naked_0x404E84, 5);
+    // 0xA101 RSA handshake: verifica token client PRIMA del login
+    util::detour((void*)0x404548, naked_0x404548, 7);
+    // 0xA202 select-server: XOR token sul server IP
+    util::detour((void*)0x4043BC, naked_0x4043BC, 8);
 }
