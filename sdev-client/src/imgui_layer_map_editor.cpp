@@ -72,6 +72,13 @@ std::vector<StagedHijack>   g_placements;
 bool    g_modelsBuilt = false;
 uint8_t g_currentType = (uint8_t)MapEntityType::Unknown;
 
+// Posizioni dei placement salvati (persistenza cross-sessione via sidecar .mods).
+// Usato da preview_show per non hijackare entity delle mod precedenti.
+struct SavedMod { float pos[3]; };
+static const uint32_t        kModsMagic     = 0x534F444Du; // "MODS"
+static std::vector<SavedMod> s_savedMods;
+static uint16_t              s_savedModsMapId = 0xFFFF;
+
 // ── Wall snap settings (condivisi tra draw_gizmos e draw_inspector_panel) ──
 float g_wallSnapWidth     = 10.0f; // fallback lunghezza (se AABB non disponibile)
 float g_wallSnapDepth     = 2.0f;  // fallback spessore  (se AABB non disponibile)
@@ -82,7 +89,7 @@ float g_snapPtY = 0.0f; // altezza del punto di snap (per allineare Y)
 
 } // namespace
 
-typedef void (__thiscall* UpdateMatrix_t)(void*);
+typedef void  (__thiscall* UpdateMatrix_t)(void*);
 static auto s_UpdateMatrix = (UpdateMatrix_t)0x005ce470;
 
 // SModel::Load — __thiscall(this=ECX=SModel*, dir, filename)
@@ -97,6 +104,7 @@ static float  s_hijackOrigRot[3]= {};
 static float  s_hijackOrigUp[3] = {};
 static float  s_previewPos[3]   = {};
 static bool   s_previewActive        = false;
+static bool   s_alignToSlope         = false; // allinea rotazione alla normale del terreno (placement manuale)
 static int    s_selectedPlacementIdx = -1; // indice in g_placements del placement attivo
 static int    s_gizmoMode            = 0;  // 0=trasla 1=ruota (condiviso con Inspector)
 static char   s_previewDbg[256] = "nessun modello selezionato";
@@ -106,7 +114,15 @@ static char   s_previewDbg[256] = "nessun modello selezionato";
 static void __cdecl s_on_section(const char* dir)
 {
     if (!dir) { g_currentType = (uint8_t)MapEntityType::Unknown; return; }
-    if      (strstr(dir, "building")) g_currentType = (uint8_t)MapEntityType::Building;
+    if      (strstr(dir, "building")) {
+        // "building" = prima sezione entity del LoadWorld → reload rilevato
+        if (!g_ents.empty()) {
+            g_ents.clear();
+            g_placements.clear();
+            g_modelsBuilt = false;
+        }
+        g_currentType = (uint8_t)MapEntityType::Building;
+    }
     else if (strstr(dir, "shape"))    g_currentType = (uint8_t)MapEntityType::Shape;
     else if (strstr(dir, "tree"))     g_currentType = (uint8_t)MapEntityType::Tree;
     else if (strstr(dir, "grass"))    g_currentType = (uint8_t)MapEntityType::Grass;
@@ -129,8 +145,13 @@ void __declspec(naked) naked_section_type_hook()
     }
 }
 
-static void __cdecl s_on_entity(void* entityPtr)
+// callerRetAddr: indirizzo di ritorno del caller di FUN_005cee20 nel call stack.
+// Solo entity caricate da FUN_00450f30 (0x00450f30..0x0045118F) sono valide —
+// altri loader (mani 0x004242ba, object 0x00568xxx) usano la stessa funzione ma
+// non devono essere catturate perché corrompono i conteggi delle sezioni WLD.
+static void __cdecl s_on_entity(void* entityPtr, uintptr_t callerRetAddr)
 {
+    if (callerRetAddr < 0x00450f30u || callerRetAddr > 0x0045118fu) return;
     if (!entityPtr || (uintptr_t)entityPtr < 0x10000) return;
     auto* b = (uint8_t*)entityPtr;
     CapturedEntity e{};
@@ -156,9 +177,13 @@ void __declspec(naked) naked_add_model_hook()
         mov     eax, dword ptr [esp + 0x4]
         mov     dword ptr [ecx + 0xa0], eax
         pushad
-        push    ecx
+        // Dopo pushad (8 reg × 4 byte = 0x20 byte), il return address originale
+        // di FUN_005cee20 è ora a [esp+0x20].
+        mov     eax, [esp + 0x20]    // callerRetAddr
+        push    eax                   // arg2: callerRetAddr
+        push    ecx                   // arg1: entityPtr
         call    s_on_entity
-        add     esp, 4
+        add     esp, 8
         popad
         jmp     s_addmodel_continue
     }
@@ -249,13 +274,16 @@ static void write_entity_section(FILE* out, MapEntityType stype)
         fwrite(buf, 256, 1, out);
     }
 
+    // ic deve contare solo entità con modelHandle valido (stesso filtro del catalogue).
+    // Se ic includesse entità con handle null, cat_idx(null) aggiungerebbe "unknown.3DC"
+    // al catalogue DOPO che mc è già stato scritto → indice fuori bounds → crash.
     int32_t ic = 0;
-    for (auto& e : g_ents)       if (matches(e.type)) ic++;
-    for (auto& h : g_placements) if (matches(h.type)) ic++;
+    for (auto& e : g_ents)       if (matches(e.type) && e.modelHandle) ic++;
+    for (auto& h : g_placements) if (matches(h.type) && h.newHandle)   ic++;
     fwrite(&ic, 4, 1, out);
 
     for (auto& e : g_ents) {
-        if (!matches(e.type)) continue;
+        if (!matches(e.type) || !e.modelHandle) continue;
         int32_t idx = cat_idx(e.modelHandle);
         fwrite(&idx,    4, 1, out);
         fwrite(e.pos,   4, 3, out);
@@ -264,7 +292,7 @@ static void write_entity_section(FILE* out, MapEntityType stype)
     }
 
     for (auto& h : g_placements) {
-        if (!matches(h.type)) continue;
+        if (!matches(h.type) || !h.newHandle) continue;
         int32_t idx = cat_idx(h.newHandle);
         fwrite(&idx,    4, 1, out);
         fwrite(h.pos,   4, 3, out);
@@ -333,7 +361,7 @@ static bool build_wld_paths(char* srcOut, size_t srcSz, char* dstOut, size_t dst
     char dllDir[MAX_PATH] = {};
     if (!get_dll_dir(dllDir, sizeof(dllDir))) return false;
     snprintf(srcOut, srcSz, "%s\\Data\\World\\%u.wld",  dllDir, (unsigned)mapId);
-    snprintf(dstOut, dstSz, "%s\\Output_Maps\\%u.wld", dllDir, (unsigned)mapId);
+    snprintf(dstOut, dstSz, "%s\\Output_Maps\\World\\%u.wld", dllDir, (unsigned)mapId);
     return true;
 }
 
@@ -342,8 +370,106 @@ static void ensure_dir(const char* filePath)
     char dir[MAX_PATH] = {};
     strncpy_s(dir, sizeof(dir), filePath, _TRUNCATE);
     char* last = strrchr(dir, '\\');
-    if (last) { *last = '\0'; CreateDirectoryA(dir, nullptr); }
+    if (!last) return;
+    *last = '\0';
+    for (char* p = dir + 1; *p; p++) {
+        if (*p == '\\') {
+            *p = '\0';
+            CreateDirectoryA(dir, nullptr);
+            *p = '\\';
+        }
+    }
+    CreateDirectoryA(dir, nullptr);
 }
+
+// ── Sidecar .mods: persistenza posizioni placement cross-sessione ─────────
+// Dopo un reload del WLD il gioco ricrea le entity con handle interni nuovi.
+// g_placements viene azzerato (pointer invalidi). Senza il sidecar, preview_show
+// non saprebbe quali entity sono "nostre" → le hijackerebbe → mod scompaiono.
+
+static char s_modsPath[MAX_PATH] = {};
+
+static void saved_mods_build_path(uint16_t mapId)
+{
+    char dllDir[MAX_PATH] = {};
+    if (!get_dll_dir(dllDir, sizeof(dllDir))) return;
+    snprintf(s_modsPath, sizeof(s_modsPath),
+        "%s\\Output_Maps\\%u.mods", dllDir, (unsigned)mapId);
+}
+
+static void saved_mods_load(uint16_t mapId)
+{
+    if (s_savedModsMapId == mapId) return;
+    s_savedMods.clear();
+    s_savedModsMapId = mapId;
+    saved_mods_build_path(mapId);
+    if (!s_modsPath[0]) return;
+
+    FILE* f = nullptr;
+    fopen_s(&f, s_modsPath, "rb");
+    if (!f) return;
+
+    uint32_t magic = 0, count = 0;
+    fread(&magic, 4, 1, f);
+    fread(&count, 4, 1, f);
+    if (magic != kModsMagic || count > 500000) { fclose(f); s_savedMods.clear(); return; }
+
+    s_savedMods.resize(count);
+    for (uint32_t i = 0; i < count; i++)
+        fread(s_savedMods[i].pos, 4, 3, f);
+    fclose(f);
+}
+
+static void saved_mods_save(uint16_t mapId)
+{
+    saved_mods_build_path(mapId);
+    if (!s_modsPath[0]) return;
+    ensure_dir(s_modsPath);
+
+    // Parti dai mods già in memoria (sessioni precedenti)
+    std::vector<SavedMod> all = s_savedMods;
+
+    // Aggiungi le posizioni dei placement correnti (evita duplicati)
+    for (auto& h : g_placements) {
+        bool dup = false;
+        for (auto& sp : all)
+            if (fabsf(sp.pos[0]-h.pos[0]) < 0.5f &&
+                fabsf(sp.pos[1]-h.pos[1]) < 0.5f &&
+                fabsf(sp.pos[2]-h.pos[2]) < 0.5f)
+                { dup = true; break; }
+        if (!dup) {
+            SavedMod sm{};
+            memcpy(sm.pos, h.pos, 12);
+            all.push_back(sm);
+        }
+    }
+
+    FILE* f = nullptr;
+    fopen_s(&f, s_modsPath, "wb");
+    if (!f) return;
+    uint32_t magic = kModsMagic;
+    uint32_t count = (uint32_t)all.size();
+    fwrite(&magic, 4, 1, f);
+    fwrite(&count, 4, 1, f);
+    for (auto& sp : all)
+        fwrite(sp.pos, 4, 3, f);
+    fclose(f);
+
+    s_savedMods     = all;
+    s_savedModsMapId = mapId;
+}
+
+static bool saved_mods_contains(const float pos[3])
+{
+    const float kEps = 0.5f;
+    for (auto& sp : s_savedMods)
+        if (fabsf(sp.pos[0]-pos[0]) < kEps &&
+            fabsf(sp.pos[1]-pos[1]) < kEps &&
+            fabsf(sp.pos[2]-pos[2]) < kEps)
+            return true;
+    return false;
+}
+// ─────────────────────────────────────────────────────────────────────────────
 
 static void do_export_wld()
 {
@@ -358,11 +484,20 @@ static void do_export_wld()
         return;
     }
 
+    // Ricostruisce sempre i path dal mapId corrente — immune da globals stale/svuotati
+    char pathSrc[MAX_PATH] = {}, pathDst[MAX_PATH] = {};
+    if (!build_wld_paths(pathSrc, sizeof(pathSrc), pathDst, sizeof(pathDst), mapId)) {
+        snprintf(s_exportMsg, sizeof(s_exportMsg), "ERRORE: impossibile calcolare path DLL.");
+        return;
+    }
+    strncpy_s(s_pathSrc, sizeof(s_pathSrc), pathSrc, _TRUNCATE);
+    strncpy_s(s_pathDst, sizeof(s_pathDst), pathDst, _TRUNCATE);
+
     FILE* f = nullptr;
-    fopen_s(&f, s_pathSrc, "rb");
+    fopen_s(&f, pathSrc, "rb");
     if (!f) {
         snprintf(s_exportMsg, sizeof(s_exportMsg),
-            "ERRORE: '%s' non trovato.", s_pathSrc);
+            "ERRORE: '%s' non trovato.", pathSrc);
         return;
     }
     fseek(f, 0, SEEK_END);
@@ -388,16 +523,17 @@ static void do_export_wld()
     // Se nessuna entity è stata modificata/aggiunta, scrivi orig verbatim
     // (solo terrain già patchato sopra). Evita bug di parsing sezioni entity.
     if (g_placements.empty()) {
-        ensure_dir(s_pathDst);
+        ensure_dir(pathDst);
         FILE* out = nullptr;
-        fopen_s(&out, s_pathDst, "wb");
+        fopen_s(&out, pathDst, "wb");
         if (!out) {
-            snprintf(s_exportMsg, sizeof(s_exportMsg), "ERRORE: impossibile creare '%s'", s_pathDst);
+            snprintf(s_exportMsg, sizeof(s_exportMsg), "ERRORE: impossibile creare '%s'", pathDst);
             return;
         }
         fwrite(orig.data(), 1, fsz, out);
         fclose(out);
-        strncpy_s(s_lastSavedPath, sizeof(s_lastSavedPath), s_pathDst, _TRUNCATE);
+        strncpy_s(s_lastSavedPath, sizeof(s_lastSavedPath), pathDst, _TRUNCATE);
+        saved_mods_save(mapId);
         snprintf(s_exportMsg, sizeof(s_exportMsg),
             "OK — Map %u  N=%d  terrain patchato, entità originali intatte.",
             (unsigned)mapId, N);
@@ -412,12 +548,12 @@ static void do_export_wld()
     }
 
     size_t afterEntities = skip_four_entity_sections(orig.data(), entityStart, fsz);
-    ensure_dir(s_pathDst);
+    ensure_dir(pathDst);
 
     FILE* out = nullptr;
-    fopen_s(&out, s_pathDst, "wb");
+    fopen_s(&out, pathDst, "wb");
     if (!out) {
-        snprintf(s_exportMsg, sizeof(s_exportMsg), "ERRORE: impossibile creare '%s'", s_pathDst);
+        snprintf(s_exportMsg, sizeof(s_exportMsg), "ERRORE: impossibile creare '%s'", pathDst);
         return;
     }
 
@@ -434,11 +570,12 @@ static void do_export_wld()
         fwrite(orig.data() + afterEntities, 1, fsz - afterEntities, out);
 
     fclose(out);
-    strncpy_s(s_lastSavedPath, sizeof(s_lastSavedPath), s_pathDst, _TRUNCATE);
+    strncpy_s(s_lastSavedPath, sizeof(s_lastSavedPath), pathDst, _TRUNCATE);
 
     int origEnts = 0;
     for (auto& e : g_ents)
         if (e.type != MapEntityType::Object && e.type != MapEntityType::Unknown) origEnts++;
+    saved_mods_save(mapId);
     snprintf(s_exportMsg, sizeof(s_exportMsg),
         "OK — Map %u  N=%d  entity orig=%d  nuove=%d  (terrain+entities)",
         (unsigned)mapId, N, origEnts, (int)g_placements.size());
@@ -559,6 +696,10 @@ static bool thumb_is_pinned(void* mem)
 {
     for (auto& h : g_placements)
         if (h.newHandle == mem) return true;
+    // After WLD reload g_placements is cleared, but world entities still show our pool handles.
+    // Pin those slots too so the LRU sweeper never recycles memory that's live in-game.
+    for (auto& e : g_ents)
+        if (e.modelHandle == mem) return true;
     return false;
 }
 
@@ -738,7 +879,7 @@ static bool world_to_screen(
 namespace imgui_layer {
 
     enum class EditorSection : int {
-        None = -1, Build = 0, Trees, Grass, Vani, Props, Wall, Others, Save, Existing, Terra
+        None = -1, Build = 0, Trees, Grass, Vani, Props, Wall, Others, Save, Existing, Terra, Scatter
     };
     static EditorSection s_section    = EditorSection::None;
     static int           s_contentSel = -1;
@@ -776,6 +917,27 @@ namespace imgui_layer {
     static std::vector<int16_t>          s_terraOrigHM;
     static std::vector<uint8_t>          s_terraOrigTM;
     static int                           s_terraOrigN   = 0;
+    // Zoom/pan minimap
+    static float                         s_miniZoom     = 1.0f;
+    static float                         s_miniPanX     = 0.0f;
+    static float                         s_miniPanZ     = 0.0f;
+
+    // ── Scatter Erba state ────────────────────────────────────────────
+    static float s_scBrushR       = 8.0f;
+    static float s_scDensity      = 0.30f;
+    static float s_scMinSpacing   = 4.0f;
+    static bool  s_scRotY         = true;
+    static bool  s_scAlignSlope   = true;  // allinea rotUp alla normale del terreno
+    static bool  s_scTypeFilter[16] = {};
+    static bool  s_scFilterInited   = false;
+    static int   s_scModelSel       = -1;
+    static char  s_scMsg[256]       = {};
+    static std::vector<int> s_scUndoBatches;
+    static int   s_scBatchStart     = -1;
+    static bool  s_scDragging       = false;
+    static float s_scMiniZoom       = 1.0f;
+    static float s_scMiniPanX       = 0.0f;
+    static float s_scMiniPanZ       = 0.0f;
 
     // Stato modifica entità già presenti nella mappa (g_ents)
     static int  s_selectedEntIdx  = -1;   // indice in g_ents (-1 = nessuna)
@@ -867,6 +1029,51 @@ namespace imgui_layer {
         return (n > 0 && n <= 4096) ? n : 0;
     }
 
+    // Normale del terreno a (worldX, worldZ) — derivata finita dall'heightmap.
+    // Ritorna vettore normalizzato (nx,ny,nz) che punta perpendicolare alla superficie.
+    static void terrain_normal_at(float worldX, float worldZ, float& nx, float& ny, float& nz)
+    {
+        int N = terra_N(); int16_t* hm = terra_hm();
+        float vs = *(const float*)0x022F227C;
+        float hs = *(const float*)0x022F2278;
+        if (N <= 0 || !hm || vs <= 0.0f) { nx=0.0f; ny=1.0f; nz=0.0f; return; }
+        int cx = max(1, min(N-2, (int)(worldX / vs + 0.5f)));
+        int cz = max(1, min(N-2, (int)(worldZ / vs + 0.5f)));
+        float hL = (float)(uint16_t)hm[(size_t)cz*N+(cx-1)] * hs;
+        float hR = (float)(uint16_t)hm[(size_t)cz*N+(cx+1)] * hs;
+        float hB = (float)(uint16_t)hm[(size_t)(cz-1)*N+cx] * hs;
+        float hF = (float)(uint16_t)hm[(size_t)(cz+1)*N+cx] * hs;
+        nx = -(hR-hL)/(2.0f*vs); ny = 1.0f; nz = -(hF-hB)/(2.0f*vs);
+        float len = sqrtf(nx*nx+ny*ny+nz*nz);
+        if (len > 0.0001f) { nx/=len; ny/=len; nz/=len; } else { nx=0;ny=1;nz=0; }
+    }
+
+    // worldX,Z → worldY con la stessa formula del gioco (FUN_005c9110 + 005D9F37).
+    // MOVZX (zero-extend → uint16) + bilinear interp + hs + yOff.
+    // Non chiama FUN_005c9110 direttamente: ECX = terrain object può essere null dall'hook.
+    static float terrain_height_at(float worldX, float worldZ)
+    {
+        int N = terra_N(); int16_t* hm = terra_hm();
+        float vs = *(const float*)0x022F227C;
+        float hs = *(const float*)0x022F2278;
+        float yo = *(const float*)0x022F2274;
+        if (N <= 0 || !hm || vs <= 0.0f) return 0.0f;
+
+        float fcx = worldX / vs, fcz = worldZ / vs;
+        int cx0 = (int)fcx, cz0 = (int)fcz;
+        int cx1 = cx0+1,   cz1 = cz0+1;
+        cx0 = max(0,min(N-1,cx0)); cz0 = max(0,min(N-1,cz0));
+        cx1 = max(0,min(N-1,cx1)); cz1 = max(0,min(N-1,cz1));
+        float tx = fcx-(int)fcx, tz = fcz-(int)fcz;
+
+        float h00=(float)(uint16_t)hm[(size_t)cz0*N+cx0];
+        float h10=(float)(uint16_t)hm[(size_t)cz0*N+cx1];
+        float h01=(float)(uint16_t)hm[(size_t)cz1*N+cx0];
+        float h11=(float)(uint16_t)hm[(size_t)cz1*N+cx1];
+        float hv=h00*(1-tx)*(1-tz)+h10*tx*(1-tz)+h01*(1-tx)*tz+h11*tx*tz;
+        return hv*hs+yo;
+    }
+
     static const ImU32 kTerraTypeColors[] = {
         IM_COL32( 90,140, 70,255), IM_COL32(170,145, 90,255),
         IM_COL32(130,125,120,255), IM_COL32(220,200,145,255),
@@ -891,9 +1098,12 @@ namespace imgui_layer {
         s_terraOrigHM.clear();
         s_terraOrigTM.clear();
         s_terraOrigN = 0;
+        s_miniZoom = 1.0f;
+        s_miniPanX = 0.0f;
+        s_miniPanZ = 0.0f;
     }
 
-    static void terra_refresh_tex()
+    static void terra_refresh_tex(bool forceType = false)
     {
         IDirect3DDevice9* dev = *(IDirect3DDevice9**)0x022b69a8;
         if (!dev) return;
@@ -916,11 +1126,46 @@ namespace imgui_layer {
                 int hx = cx2 * N / 256, hy = cy * N / 256;
                 int idx = hy * N + hx;
                 uint32_t col;
-                if (s_terraShowTypes && tm) {
+                if ((s_terraShowTypes && tm && s_terraBrushMode == 3) || (forceType && tm)) {
                     col = kTerraTypeColors[tm[idx] % kTerraNumTypes];
+                    // checkerboard luminance: pixel alternati schiariti (alzato) o scuriti (abbassato)
+                    // color-neutral: contrasta con qualsiasi colore tipo senza conflitti
+                    if (!s_terraOrigHM.empty() && s_terraOrigN == N) {
+                        int32_t delta = (int32_t)hm[idx] - (int32_t)s_terraOrigHM[idx];
+                        if (delta != 0 && ((cx2 + cy) & 1)) {
+                            uint32_t r = (col >> 16) & 0xFF;
+                            uint32_t g = (col >>  8) & 0xFF;
+                            uint32_t b =  col        & 0xFF;
+                            if (delta > 0) {
+                                // alzato → schiarisci verso bianco (55% white)
+                                r = r * 45/100 + 140;
+                                g = g * 45/100 + 140;
+                                b = b * 45/100 + 140;
+                            } else {
+                                // abbassato → scurisci verso nero (55% black)
+                                r = r * 45/100;
+                                g = g * 45/100;
+                                b = b * 45/100;
+                            }
+                            col = 0xFF000000u | (r << 16) | (g << 8) | b;
+                        }
+                    }
+                } else if (!s_terraOrigHM.empty() && s_terraOrigN == N) {
+                    // delta dall'originale: transparent=invariato, arancione=alzato, ciano=abbassato
+                    int32_t delta = (int32_t)hm[idx] - (int32_t)s_terraOrigHM[idx];
+                    if (delta == 0) {
+                        col = 0x00000000u;
+                    } else if (delta > 0) {
+                        uint8_t mag = (uint8_t)min(255, 160 + (delta >> 2));
+                        col = 0xE0000000u | ((uint32_t)mag << 16) | ((uint32_t)(mag / 2) << 8);
+                    } else {
+                        uint8_t mag = (uint8_t)min(255, 160 + ((-delta) >> 2));
+                        col = 0xE0000000u | ((uint32_t)(mag / 2) << 8) | (uint32_t)mag;
+                    }
                 } else {
+                    // nessun originale: grayscale tenue (orienta l'utente prima del primo edit)
                     uint8_t lum = (uint8_t)(((int)hm[idx] - (-32768)) >> 8);
-                    col = 0xFF000000u | ((uint32_t)lum<<16) | ((uint32_t)lum<<8) | lum;
+                    col = 0x50000000u | ((uint32_t)lum<<16) | ((uint32_t)lum<<8) | lum;
                 }
                 pix[cy * pitch + cx2] = col;
             }
@@ -1071,7 +1316,7 @@ namespace imgui_layer {
                     break;
                 }
                 case 3:
-                    if (tm && d < 0.8f) {
+                    if (tm) {
                         terra_undo_record_tm(idx, tm[idx]);
                         tm[idx] = (uint8_t)s_terraPaintType;
                     }
@@ -1097,7 +1342,7 @@ namespace imgui_layer {
         if (!get_dll_dir(dllDir,sizeof(dllDir))) { snprintf(s_terraMsg,sizeof(s_terraMsg),"ERRORE: path DLL."); return; }
         char src[MAX_PATH], dst[MAX_PATH];
         snprintf(src,MAX_PATH,"%s\\Data\\World\\%u.wld",dllDir,(unsigned)mapId);
-        snprintf(dst,MAX_PATH,"%s\\Output_Maps\\%u.wld",dllDir,(unsigned)mapId);
+        snprintf(dst,MAX_PATH,"%s\\Output_Maps\\World\\%u.wld",dllDir,(unsigned)mapId);
 
         FILE* f = nullptr;
         fopen_s(&f, src, "rb");
@@ -1119,7 +1364,7 @@ namespace imgui_layer {
         fopen_s(&out, dst, "wb");
         if (!out) { snprintf(s_terraMsg,sizeof(s_terraMsg),"ERRORE: impossibile scrivere '%s'.",dst); return; }
         fwrite(buf.data(),1,(size_t)fsz,out); fclose(out);
-        snprintf(s_terraMsg,sizeof(s_terraMsg),"Salvato: Output_Maps\\%u.wld  (N=%d, heightmap+typemap patchati)",(unsigned)mapId,N);
+        snprintf(s_terraMsg,sizeof(s_terraMsg),"Salvato: Output_Maps\\World\\%u.wld  (N=%d, heightmap+typemap patchati)",(unsigned)mapId,N);
         s_terraHasEdits = false;
     }
 
@@ -1277,7 +1522,11 @@ namespace imgui_layer {
                     }
                     if (!anyChange) { skipped++; continue; }
 
-                    // Leggi file DXT3 originale completo (header + tutti i mip)
+                    // Path output (calcolato prima per usarlo come sorgente preferita)
+                    char outPath[512];
+                    snprintf(outPath, sizeof(outPath), "%s\\%s_%d%d_A%d.dds",
+                        outDir, mapStr, pr, pc, t);
+                    // Sorgente originale (fallback)
                     char srcPath[512];
                     snprintf(srcPath, sizeof(srcPath), "%s\\%s_%d%d_A%d.dds",
                         srcDir, mapStr, pr, pc, t);
@@ -1285,8 +1534,10 @@ namespace imgui_layer {
                     DDSHdr hdr = {};
                     std::vector<uint8_t> dxt3(kTotalDXTSize, 0u);
 
+                    // Preferisci il file già esportato (mantiene modifiche sessioni precedenti)
                     FILE* fsrc = nullptr;
-                    fopen_s(&fsrc, srcPath, "rb");
+                    fopen_s(&fsrc, outPath, "rb");
+                    if (!fsrc) fopen_s(&fsrc, srcPath, "rb");
                     if (fsrc) {
                         if (fread(&hdr, 1, sizeof(hdr), fsrc) == sizeof(hdr)
                             && hdr.magic == 0x20534444u) {
@@ -1320,40 +1571,77 @@ namespace imgui_layer {
                         }
                     }
 
-                    // Modifica i DXT3 block di mip 0 per le celle dipinte.
-                    // DXT3 block (16 byte): byte 0-7 = 16 nibble alpha (4-bit per pixel),
-                    //   byte 8-15 = color block DXT1.
-                    // Nibble per pixel (r,c) nel 4×4 block: nibble_idx = r*4+c,
-                    //   byte = nibble_idx/2, low nibble se pari, high se dispari.
-                    for (int cy = 0; cy < cellsPerPatch; cy++) {
-                        int gy = baseRow + cy; if (gy >= N) break;
-                        for (int cx = 0; cx < cellsPerPatch; cx++) {
-                            int gx = baseCol + cx; if (gx >= N) break;
-                            size_t cellIdx = (size_t)gy * N + gx;
-                            if (!s_terraOrigTM.empty() && tm[cellIdx] == s_terraOrigTM[cellIdx]) continue;
+                    // Loop BLOCK-centric: evita il clobber del vecchio approccio cell-centric.
+                    // Precedentemente: per ogni cella cambiata si sovrascriveva l'intero blocco
+                    // DXT3 con alpha uniforme → celle vicine non cambiate venivano corrotte →
+                    // terreno trasparente/scomparso a R>10, e R=1..10 visivamente identici.
+                    //
+                    // Nuovo approccio: per ogni blocco DXT3, se almeno una cella coperta è
+                    // cambiata → ricalcola i 16 nibble alpha uno per uno.
+                    // Ogni pixel del blocco riceve alpha = frazione delle celle che copre con tipo t.
+                    // Risultato: per-pixel alpha, bordi sfumati naturali, nessun clobber.
+                    for (int bby = 0; bby < kBlocksY; bby++) {
+                        for (int bbx = 0; bbx < kBlocksX; bbx++) {
+                            // Range celle coperte da questo blocco (stima larga per early-out)
+                            int cxMin = (bbx * 4) * cellsPerPatch / kTexW;
+                            int cxMax = ((bbx + 1) * 4) * cellsPerPatch / kTexW + 1;
+                            int cyMin = (bby * 4) * cellsPerPatch / kTexH;
+                            int cyMax = ((bby + 1) * 4) * cellsPerPatch / kTexH + 1;
 
-                            // Layer t: alpha 15 (0xF) se questa cella ha tipo t, altrimenti 0
-                            uint8_t a4 = (tm[cellIdx] == (uint8_t)t) ? 0xFu : 0x0u;
-                            uint8_t packed = (uint8_t)(a4 | (a4 << 4)); // stesso valore nei due nibble
+                            bool blockChanged = false;
+                            for (int cry = cyMin; cry < cyMax && !blockChanged; cry++) {
+                                int gy = baseRow + cry; if (gy >= N) break;
+                                for (int crx = cxMin; crx < cxMax && !blockChanged; crx++) {
+                                    int gx = baseCol + crx; if (gx >= N) break;
+                                    size_t idx = (size_t)gy * N + gx;
+                                    if (s_terraOrigTM.empty() || tm[idx] != s_terraOrigTM[idx])
+                                        blockChanged = true;
+                                }
+                            }
+                            if (!blockChanged) continue; // mantieni alpha originale dal DDS caricato
 
-                            // Cella → pixel texture (nearest-neighbor) → blocco DXT3
-                            int py = cy * kTexH / cellsPerPatch;
-                            int px = cx * kTexW / cellsPerPatch;
-                            int bx = px / 4; if (bx >= kBlocksX) bx = kBlocksX - 1;
-                            int by = py / 4; if (by >= kBlocksY) by = kBlocksY - 1;
-                            size_t blkOff = ((size_t)by * kBlocksX + bx) * 16;
-
-                            // Solo alpha block (byte 0-7): 16 nibble 4-bit per pixel
-                            // Color block (byte 8-15) rimane dall'originale — il gioco
-                            // usa RGB del DXT3 per il rendering, non solo l'alpha.
-                            for (int i = 0; i < 8; i++) dxt3[blkOff + i] = packed;
+                            // Ricalcola i 16 nibble alpha (byte 0-7 del blocco DXT3).
+                            // Color block (byte 8-15) rimane dall'originale.
+                            size_t blkOff = ((size_t)bby * kBlocksX + bbx) * 16;
+                            uint8_t alphaBytes[8] = {};
+                            for (int prow = 0; prow < 4; prow++) {
+                                for (int pcol = 0; pcol < 4; pcol++) {
+                                    int pixX = bbx * 4 + pcol;
+                                    int pixY = bby * 4 + prow;
+                                    // Celle coperte da questo pixel (può essere >1 se texture < cellsPerPatch)
+                                    int cx0 = pixX * cellsPerPatch / kTexW;
+                                    int cx1 = (pixX + 1) * cellsPerPatch / kTexW;
+                                    int cy0 = pixY * cellsPerPatch / kTexH;
+                                    int cy1 = (pixY + 1) * cellsPerPatch / kTexH;
+                                    if (cx1 <= cx0) cx1 = cx0 + 1;
+                                    if (cy1 <= cy0) cy1 = cy0 + 1;
+                                    // alpha = celle con tipo t / totale celle coperte (0..15)
+                                    int total = 0, typeCount = 0;
+                                    for (int cry2 = cy0; cry2 < cy1; cry2++) {
+                                        int gy = baseRow + cry2; if (gy >= N) continue;
+                                        for (int crx2 = cx0; crx2 < cx1; crx2++) {
+                                            int gx = baseCol + crx2; if (gx >= N) continue;
+                                            total++;
+                                            if (tm[(size_t)gy * N + gx] == (uint8_t)t) typeCount++;
+                                        }
+                                    }
+                                    uint8_t a4 = total > 0
+                                        ? (uint8_t)(typeCount * 15 / total)
+                                        : 0u;
+                                    // Nibble packing: nibble_idx = prow*4+pcol,
+                                    // byte = nibble_idx/2, low nibble se pari, high se dispari.
+                                    int nibbleIdx = prow * 4 + pcol;
+                                    if (nibbleIdx % 2 == 0)
+                                        alphaBytes[nibbleIdx / 2] = (alphaBytes[nibbleIdx / 2] & 0xF0u) | a4;
+                                    else
+                                        alphaBytes[nibbleIdx / 2] = (alphaBytes[nibbleIdx / 2] & 0x0Fu) | (uint8_t)(a4 << 4);
+                                }
+                            }
+                            memcpy(&dxt3[blkOff], alphaBytes, 8);
                         }
                     }
 
                     // Scrivi DDS completo (header + tutti i mip, 87536 byte totali)
-                    char outPath[512];
-                    snprintf(outPath, sizeof(outPath), "%s\\%s_%d%d_A%d.dds",
-                        outDir, mapStr, pr, pc, t);
                     FILE* fout = nullptr;
                     fopen_s(&fout, outPath, "wb");
                     if (!fout) continue;
@@ -1520,9 +1808,25 @@ namespace imgui_layer {
             }
         }
 
-        // Debug: mostra valori raw per diagnostica posizione
+        // Debug + controlli zoom
         ImGui::TextDisabled("N=%d vs=%.2f worldSz=%.0f  px=(%.0f,%.0f)",
             N, vs, worldSz, playerX, playerZ);
+        ImGui::SameLine();
+        ImGui::Text("Zoom:%.1fx", s_miniZoom);
+        ImGui::SameLine();
+        if (ImGui::SmallButton("1:1##zr")) { s_miniZoom = 1.0f; s_miniPanX = 0.0f; s_miniPanZ = 0.0f; }
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Reimposta zoom (1:1)");
+        ImGui::SameLine();
+        ImGui::TextDisabled("Scroll=zoom  Drag(R)=sposta");
+
+        // Marca canvas dirty quando l'utente cambia modo (height↔tipo)
+        {
+            static int s_prevBrushMode = -1;
+            if (s_terraBrushMode != s_prevBrushMode) {
+                s_prevBrushMode    = s_terraBrushMode;
+                s_terraCanvasDirty = true;
+            }
+        }
 
         // In modo Tipo: usa canvas con colori tipo per feedback visivo immediato
         // (minimap statica non mostra le modifiche tipo prima di Rebuild Live)
@@ -1532,7 +1836,6 @@ namespace imgui_layer {
         IDirect3DTexture9* displayTex = nullptr;
         bool useMini = false;
         if (useTipoCanvas || !s_terraMiniTex) {
-            // Canvas heightmap/tipo
             if (s_terraCanvasDirty) terra_refresh_tex();
             displayTex = s_terraCanvasTex;
             useMini    = false;
@@ -1546,53 +1849,130 @@ namespace imgui_layer {
         bool isPainting = false;
 
         if (displayTex) {
+            // UV di zoom: mostra la regione [panX, panX+viewSzW] x [panZ, panZ+viewSzW]
+            float viewSzW = (worldSz > 0.0f) ? worldSz / s_miniZoom : worldSz;
+            float ux0 = (worldSz > 0.0f) ? s_miniPanX / worldSz : 0.0f;
+            float ux1 = ux0 + (worldSz > 0.0f ? viewSzW / worldSz : 1.0f);
+            ImVec2 uvMin, uvMax;
+            if (!useMini) {
+                // Canvas: riga 0=Z=0=sud; flip Y → top display=nord=Z grande
+                float uy_top    = (worldSz > 0.0f) ? (s_miniPanZ + viewSzW) / worldSz : 1.0f;
+                float uy_bottom = (worldSz > 0.0f) ?  s_miniPanZ             / worldSz : 0.0f;
+                uvMin = ImVec2(ux0, uy_top);
+                uvMax = ImVec2(ux1, uy_bottom);
+            } else {
+                // Minimap PNG: riga 0=nord=Z grande; Y normale
+                float uy_top    = (worldSz > 0.0f) ? 1.0f - (s_miniPanZ + viewSzW) / worldSz : 0.0f;
+                float uy_bottom = (worldSz > 0.0f) ? 1.0f -  s_miniPanZ             / worldSz : 1.0f;
+                uvMin = ImVec2(ux0, uy_top);
+                uvMax = ImVec2(ux1, uy_bottom);
+            }
+
             ImVec2 cpos = ImGui::GetCursorScreenPos();
-            // Asse Z in Shaiya aumenta verso nord: Z=0=sud, Z=max=nord.
-            // Canvas costruito con riga 0 in cima = Z=0=sud → immagine capovolta.
-            // UV flip (0,1)→(1,0) mette nord in cima per il canvas.
-            // Minimap PNG del gioco ha già nord in cima → no flip.
-            if (!useMini)
-                ImGui::Image((ImTextureID)displayTex, ImVec2(sz, sz), ImVec2(0,1), ImVec2(1,0));
-            else
-                ImGui::Image((ImTextureID)displayTex, ImVec2(sz, sz));
+            ImGui::Image((ImTextureID)displayTex, ImVec2(sz, sz), uvMin, uvMax);
             ImDrawList* dl = ImGui::GetWindowDrawList();
 
-            // Player position dot (valido se coordinate sensate)
-            // fz = 1 - Z/worldSz: Z piccolo=sud=in basso, Z grande=nord=in alto
-            bool playerValid = (playerX > -50000.0f) && (worldSz > 0.0f);
+            // Overlay delta heightmap sulla minimap (sempre in height mode)
+            if (useMini && s_terraBrushMode != 3) {
+                if (s_terraCanvasDirty) terra_refresh_tex();
+                if (s_terraCanvasTex) {
+                    // Canvas: riga 0=Z=0=sud → flip Y per display nord-up
+                    float cu_top    = (worldSz > 0.0f) ? (s_miniPanZ + viewSzW) / worldSz : 1.0f;
+                    float cu_bottom = (worldSz > 0.0f) ?  s_miniPanZ             / worldSz : 0.0f;
+                    ImVec2 cuMin(ux0, cu_top), cuMax(ux1, cu_bottom);
+                    dl->AddImage((ImTextureID)s_terraCanvasTex,
+                        cpos, ImVec2(cpos.x + sz, cpos.y + sz),
+                        cuMin, cuMax, IM_COL32(255, 255, 255, 255));
+                }
+            }
+
+            // Player arrow (coordinate remappate con zoom/pan)
+            bool playerValid = (playerX > -50000.0f) && (worldSz > 0.0f) && (viewSzW > 0.0f);
             if (playerValid) {
-                float fx = playerX / worldSz;
-                float fz = 1.0f - (playerZ / worldSz);
-                // Mostra solo se dentro [0,1] (con un po' di margine)
-                if (fx >= -0.05f && fx <= 1.05f && fz >= -0.05f && fz <= 1.05f) {
-                    float dpx = cpos.x + fx * sz;
-                    float dpz = cpos.y + fz * sz;
-                    dl->AddCircleFilled({dpx, dpz}, 5.0f, IM_COL32(0,255,80,230));
-                    dl->AddCircle({dpx, dpz}, 7.0f, IM_COL32(255,255,255,200), 0, 1.5f);
-                } else {
-                    // Dot fuori range: mostra debug
-                    ImGui::TextColored(ImVec4(1.0f,0.7f,0.2f,1.0f),
-                        "Dot fuori range: fx=%.3f fz=%.3f (worldSz=%.0f)", fx, fz, worldSz);
+                float dpx = cpos.x + (playerX - s_miniPanX) / viewSzW * sz;
+                float dpz = cpos.y + (1.0f - (playerZ - s_miniPanZ) / viewSzW) * sz;
+                if (dpx >= cpos.x && dpx <= cpos.x + sz && dpz >= cpos.y && dpz <= cpos.y + sz) {
+                    // Direzione camera orizzontale (forward = punta freccia)
+                    float aFx = 0.0f, aFz = -1.0f; // default: nord
+                    {
+                        IDirect3DDevice9* pD3D = *ppD3DDevice;
+                        if (pD3D) {
+                            D3DMATRIX mv; pD3D->GetTransform(D3DTS_VIEW, &mv);
+                            float hlen = sqrtf(mv._13*mv._13 + mv._33*mv._33);
+                            if (hlen > 0.01f) { aFx = mv._13/hlen; aFz = mv._33/hlen; }
+                        }
+                    }
+                    // Minimap: X→screen X, Z→screen Y (invertito). Fwd su screen = (aFx, -aFz)
+                    float sfx =  aFx, sfy = -aFz;
+                    // Perp (dx, dy) = (-sfy, sfx)
+                    const float TIP = 9.0f, BASE_HALF = 5.0f, BASE_BACK = 4.0f;
+                    ImVec2 tip   (dpx + sfx * TIP,        dpz + sfy * TIP);
+                    ImVec2 baseL (dpx - sfx * BASE_BACK + (-sfy) * (-BASE_HALF),
+                                  dpz - sfy * BASE_BACK + ( sfx) * (-BASE_HALF));
+                    ImVec2 baseR (dpx - sfx * BASE_BACK + (-sfy) * ( BASE_HALF),
+                                  dpz - sfy * BASE_BACK + ( sfx) * ( BASE_HALF));
+                    dl->AddTriangleFilled(tip, baseL, baseR, IM_COL32(0, 255, 80, 230));
+                    dl->AddTriangle(tip, baseL, baseR, IM_COL32(255, 255, 255, 200), 1.5f);
                 }
             }
 
             if (ImGui::IsItemHovered()) {
                 ImVec2 mp = ImGui::GetMousePos();
-                float brushPx = s_terraBrushR * sz / (float)N;
+
+                // Zoom con scroll wheel centrato sul punto del mouse
+                float wheel = ImGui::GetIO().MouseWheel;
+                if (wheel != 0.0f && viewSzW > 0.0f) {
+                    float oldViewSzW = viewSzW;
+                    float factor = (wheel > 0.0f) ? 1.2f : (1.0f / 1.2f);
+                    s_miniZoom *= factor;
+                    s_miniZoom = ImClamp(s_miniZoom, 1.0f, 32.0f);
+                    float newViewSzW = (worldSz > 0.0f) ? worldSz / s_miniZoom : worldSz;
+                    float u_m = (mp.x - cpos.x) / sz;
+                    float v_m = (mp.y - cpos.y) / sz;
+                    float mwX = s_miniPanX + u_m * oldViewSzW;
+                    float mwZ = s_miniPanZ + (1.0f - v_m) * oldViewSzW;
+                    s_miniPanX = mwX - u_m * newViewSzW;
+                    s_miniPanZ = mwZ - (1.0f - v_m) * newViewSzW;
+                    float clampMax = worldSz - newViewSzW;
+                    s_miniPanX = ImClamp(s_miniPanX, 0.0f, max(0.0f, clampMax));
+                    s_miniPanZ = ImClamp(s_miniPanZ, 0.0f, max(0.0f, clampMax));
+                    viewSzW = newViewSzW;
+                }
+
+                // Cerchio brush (dimensione in pixel proporzionale al raggio in world)
+                float brushPx = (viewSzW > 0.0f && vs > 0.0f)
+                    ? s_terraBrushR * vs / viewSzW * sz
+                    : s_terraBrushR * sz / (float)N;
                 dl->AddCircle(mp, brushPx, IM_COL32(255,255,80,200), 32, 1.5f);
 
-                float u = (mp.x - cpos.x) / sz;
+                // Converti mouse → cella heightmap (con zoom/pan)
+                float u  = (mp.x - cpos.x) / sz;
                 float v2 = (mp.y - cpos.y) / sz;
-                // bz invertito: top display=nord=Z alto=riga N-1; bottom=sud=Z basso=riga 0
-                int bx = (int)(u * N), bz = (int)((1.0f - v2) * N);
+                float worldX = (viewSzW > 0.0f) ? s_miniPanX + u * viewSzW : u * worldSz;
+                float worldZ = (viewSzW > 0.0f) ? s_miniPanZ + (1.0f - v2) * viewSzW : (1.0f - v2) * worldSz;
+                int bx = (vs > 0.0f) ? (int)(worldX / vs) : (int)(worldX / worldSz * (float)N);
+                int bz = (vs > 0.0f) ? (int)(worldZ / vs) : (int)(worldZ / worldSz * (float)N);
                 if (bx >= 0 && bx < N && bz >= 0 && bz < N) {
                     isPainting = ImGui::IsMouseDown(0);
-                    if (isPainting) terra_apply_brush(bx, bz);
+                    if (isPainting) {
+                        if (!s_wasPainting) terra_undo_begin();  // snapshot PRIMA della prima pennellata
+                        terra_apply_brush(bx, bz);
+                    }
                     ImGui::SetTooltip("HM(%d,%d)  H=%d  World(%.1f,%.1f)  Type=%d",
                         bx, bz, (int)hm[bz*N+bx],
-                        (float)bx*vs, (float)bz*vs,
+                        worldX, worldZ,
                         tm ? (int)tm[bz*N+bx] : 0);
                 }
+            }
+
+            // Pan con drag destro
+            if (ImGui::IsItemActive() && ImGui::IsMouseDragging(ImGuiMouseButton_Right) && viewSzW > 0.0f) {
+                ImVec2 delta = ImGui::GetIO().MouseDelta;
+                s_miniPanX -= delta.x / sz * viewSzW;
+                s_miniPanZ += delta.y / sz * viewSzW;
+                float clampMax = worldSz - viewSzW;
+                s_miniPanX = ImClamp(s_miniPanX, 0.0f, max(0.0f, clampMax));
+                s_miniPanZ = ImClamp(s_miniPanZ, 0.0f, max(0.0f, clampMax));
             }
 
             if (useTipoCanvas)
@@ -1604,7 +1984,6 @@ namespace imgui_layer {
         }
 
         // Undo stroke management
-        if (isPainting && !s_wasPainting)  terra_undo_begin();
         if (!isPainting && s_wasPainting)  terra_undo_end();
         s_wasPainting = isPainting;
 
@@ -1654,10 +2033,12 @@ namespace imgui_layer {
                 char tmp[512];
                 snprintf(tmp, sizeof(tmp), "%s\\Output_Maps", dllDirAlpha);
                 CreateDirectoryA(tmp, nullptr);
-                snprintf(tmp, sizeof(tmp), "%s\\Output_Maps\\Field", dllDirAlpha);
+                snprintf(tmp, sizeof(tmp), "%s\\Output_Maps\\World", dllDirAlpha);
+                CreateDirectoryA(tmp, nullptr);
+                snprintf(tmp, sizeof(tmp), "%s\\Output_Maps\\World\\Field", dllDirAlpha);
                 CreateDirectoryA(tmp, nullptr);
                 char outDir[512];
-                snprintf(outDir, sizeof(outDir), "%s\\Output_Maps\\Field\\%u",
+                snprintf(outDir, sizeof(outDir), "%s\\Output_Maps\\World\\Field\\%u",
                     dllDirAlpha, (unsigned)mid);
                 CreateDirectoryA(outDir, nullptr);
                 // srcDir = directory originale del gioco (Data\World\Field\{mapId})
@@ -1673,8 +2054,8 @@ namespace imgui_layer {
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip(
                 "Genera {mapId}_{row}{col}_A{T}.dds per ogni patch e ogni tipo.\n"
-                "Output: DLL_DIR\\Output_Maps\\Field\\{mapId}\\\n"
-                "1) Copia i file in data\\Field\\{mapId}\\ del gioco\n"
+                "Output: DLL_DIR\\Output_Maps\\World\\Field\\{mapId}\\\n"
+                "1) Copia la cartella World\\ in data\\ del gioco\n"
                 "2) Inseriscili nel SAH con il tool (path: Field/{mapId}/{mapId}_{rc}_A{T}.dds)\n"
                 "3) Ricarica la mappa → i tipi dipinti appaiono in-game.");
 
@@ -1814,12 +2195,15 @@ namespace imgui_layer {
             for (int pass = 0; pass < 2 && !best; pass++) {
                 bestD = 1e9f;
                 for (auto& e : g_ents) {
-                    if (!e.ptr || e.modelHandle == m.handle) continue;
-                    if (pass == 0 && e.type != m.type) continue;
+                    if (!e.ptr) continue;
+                    // Skip entity se la sua posizione corrisponde a un placement salvato
+                    // (sessione corrente via g_placements, o sessioni precedenti via sidecar).
+                    if (saved_mods_contains(e.pos)) continue;
                     bool staged = false;
                     for (auto& h : g_placements)
                         if (h.entityPtr == e.ptr) { staged = true; break; }
                     if (staged) continue;
+                    if (pass == 0 && e.type != m.type) continue;
                     float dx = e.pos[0]-px, dz = e.pos[2]-pz;
                     float d = dx*dx + dz*dz;
                     if (d < bestD) { bestD = d; best = e.ptr; }
@@ -1856,8 +2240,8 @@ namespace imgui_layer {
             }
         }
         s_previewPos[0] = px + camFx * 8.0f;
-        s_previewPos[1] = py;
         s_previewPos[2] = pz + camFz * 8.0f;
+        s_previewPos[1] = terrain_height_at(s_previewPos[0], s_previewPos[2]);
 
         // rotFwd: initFwd > direzione camera
         float rx, ry, rz, ux, uy, uz;
@@ -1891,6 +2275,17 @@ namespace imgui_layer {
             }
         }
 
+        // Allinea alla pendenza del terreno se richiesto
+        if (s_alignToSlope) {
+            float nx, ny, nz;
+            terrain_normal_at(s_previewPos[0], s_previewPos[2], nx, ny, nz);
+            ux = nx; uy = ny; uz = nz;
+            float dot = rx*nx + ry*ny + rz*nz;
+            float prx=rx-dot*nx, pry=ry-dot*ny, prz=rz-dot*nz;
+            float prl=sqrtf(prx*prx+pry*pry+prz*prz);
+            if (prl > 0.001f) { rx=prx/prl; ry=pry/prl; rz=prz/prl; }
+        }
+
         *(float*)(b+0x04) = s_previewPos[0]; *(float*)(b+0x08) = s_previewPos[1]; *(float*)(b+0x0c) = s_previewPos[2];
         *(float*)(b+0x10) = rx; *(float*)(b+0x14) = ry; *(float*)(b+0x18) = rz;
         *(float*)(b+0x1c) = ux; *(float*)(b+0x20) = uy; *(float*)(b+0x24) = uz;
@@ -1910,6 +2305,8 @@ namespace imgui_layer {
             ? ImVec4(0.2f,1.0f,0.5f,1.0f)
             : (strncmp(s_previewDbg,"FAIL",4)==0 ? ImVec4(1,0.3f,0.3f,1) : ImVec4(0.5f,0.5f,0.5f,1));
         ImGui::TextColored(sc, "%s", s_previewDbg);
+        ImGui::SameLine();
+        ImGui::Checkbox("Allinea pendenza##mod", &s_alignToSlope);
 
         // Lista piazzati per questa sezione (cliccabili per selezionare/rieditare)
         MapEntityType mtype = section_to_type(sec);
@@ -1934,9 +2331,405 @@ namespace imgui_layer {
         ImGui::Separator();
     }
 
+    // ── Scatter Erba: undo ────────────────────────────────────────────
+    static void scatter_undo()
+    {
+        if (s_scUndoBatches.empty()) {
+            snprintf(s_scMsg, sizeof(s_scMsg), "Niente da annullare.");
+            return;
+        }
+        int count = s_scUndoBatches.back();
+        s_scUndoBatches.pop_back();
+        int start = (int)g_placements.size() - count;
+        if (start < 0) start = 0;
+        for (int i = start; i < (int)g_placements.size(); i++) {
+            auto& h = g_placements[i];
+            auto* b = (uint8_t*)h.entityPtr;
+            *(void**)(b + 0xA0) = h.origHandle;
+            *(float*)(b + 0x04) = h.origPos[0];
+            *(float*)(b + 0x08) = h.origPos[1];
+            *(float*)(b + 0x0c) = h.origPos[2];
+            *(float*)(b + 0x10) = h.origRot[0];
+            *(float*)(b + 0x14) = h.origRot[1];
+            *(float*)(b + 0x18) = h.origRot[2];
+            *(float*)(b + 0x1c) = h.origUp[0];
+            *(float*)(b + 0x20) = h.origUp[1];
+            *(float*)(b + 0x24) = h.origUp[2];
+            s_UpdateMatrix(h.entityPtr);
+        }
+        g_placements.resize((size_t)(start < 0 ? 0 : start));
+        snprintf(s_scMsg, sizeof(s_scMsg), "Annullati %d modelli (rimasti: %d).",
+            count, (int)g_placements.size());
+    }
+
+    // ── Scatter Erba: pianta un brush ────────────────────────────────
+    static void scatter_apply_brush(float worldX, float worldZ)
+    {
+        int N = terra_N();
+        float vs = *(float*)0x022F227C;
+        if (N <= 0 || vs < 0.1f) return;
+        uint8_t* tm = terra_tm();
+        int16_t* hm = terra_hm();
+        if (!tm || !hm) { snprintf(s_scMsg, sizeof(s_scMsg), "Heightmap/typemap non disponibili."); return; }
+
+        // Trova handle modello selezionato
+        void*         scHandle = nullptr;
+        MapEntityType scType   = MapEntityType::Grass;
+        {
+            int gi = 0;
+            for (auto& m : g_models) {
+                if (m.type != MapEntityType::Grass && m.type != MapEntityType::Vani) continue;
+                if (gi == s_scModelSel) { scHandle = m.handle; scType = m.type; break; }
+                gi++;
+            }
+        }
+        if (!scHandle) { snprintf(s_scMsg, sizeof(s_scMsg), "Seleziona un modello Grass prima."); return; }
+
+
+        int   R     = (int)ceilf(s_scBrushR);
+        int   cx0   = (int)(worldX / vs + 0.5f);
+        int   cz0   = (int)(worldZ / vs + 0.5f);
+        float minSq = s_scMinSpacing * s_scMinSpacing;
+
+        // Posizioni Grass già piazzate (per spacing check)
+        std::vector<float> existX, existZ;
+        for (auto& h : g_placements) {
+            if (h.type == MapEntityType::Grass || h.type == MapEntityType::Vani) {
+                existX.push_back(h.pos[0]); existZ.push_back(h.pos[2]);
+            }
+        }
+
+        int added = 0;
+        for (int dz = -R; dz <= R; dz++) {
+            for (int dx = -R; dx <= R; dx++) {
+                if (sqrtf((float)(dx*dx + dz*dz)) > s_scBrushR) continue;
+                int cx = cx0 + dx, cz = cz0 + dz;
+                if (cx < 0 || cx >= N || cz < 0 || cz >= N) continue;
+
+                uint8_t ttype = tm[(size_t)cz * N + cx];
+                if (ttype >= 16 || !s_scTypeFilter[ttype]) continue;
+                if ((float)rand() / RAND_MAX >= s_scDensity) continue;
+
+                // Posizione world con jitter sub-cella
+                float wx = ((float)cx + (float)rand()/RAND_MAX - 0.5f) * vs;
+                float wz = ((float)cz + (float)rand()/RAND_MAX - 0.5f) * vs;
+                float wy = terrain_height_at(wx, wz);
+
+                // Spacing check
+                bool tooClose = false;
+                for (int si = 0; si < (int)existX.size() && !tooClose; si++) {
+                    float ddx = wx - existX[si], ddz = wz - existZ[si];
+                    if (ddx*ddx + ddz*ddz < minSq) tooClose = true;
+                }
+                if (tooClose) continue;
+
+                // Trova entity Grass libera PIÙ VICINA al target XZ.
+                // Entity vicina = stesso settore visivo → appare in live + Y del terreno corretto.
+                void*          freeEnt = nullptr;
+                CapturedEntity freeCapt{};
+                float          freeEntDist2 = 1e9f;
+                for (auto& e : g_ents) {
+                    if (!e.ptr) continue;
+                    if (e.type != MapEntityType::Grass && e.type != MapEntityType::Vani) continue;
+                    bool inUse = false;
+                    for (auto& h2 : g_placements) if (h2.entityPtr == e.ptr) { inUse = true; break; }
+                    if (inUse) continue;
+                    if (saved_mods_contains(e.pos)) continue;
+                    float dx = e.pos[0] - wx, dz = e.pos[2] - wz;
+                    float d2 = dx*dx + dz*dz;
+                    if (d2 < freeEntDist2) { freeEntDist2 = d2; freeEnt = e.ptr; freeCapt = e; }
+                }
+                if (!freeEnt) {
+                    snprintf(s_scMsg, sizeof(s_scMsg),
+                        "Entity Grass esaurite (%d piazzati). Esporta WLD per liberare slot.", added);
+                    return;
+                }
+
+                // Rotazione Y random
+                float angle = s_scRotY ? ((float)rand() / RAND_MAX * 6.28318f) : 0.0f;
+
+                StagedHijack h{};
+                h.entityPtr  = freeEnt;
+                h.origHandle = freeCapt.modelHandle;
+                memcpy(h.origPos, freeCapt.pos,   12);
+                memcpy(h.origRot, freeCapt.rot,   12);
+                memcpy(h.origUp,  freeCapt.rotUp, 12);
+                h.newHandle  = scHandle;
+                h.pos[0] = wx; h.pos[1] = wy;  h.pos[2] = wz;
+                float fwdX = sinf(angle), fwdZ = cosf(angle);
+                if (s_scAlignSlope) {
+                    float nx, ny, nz;
+                    terrain_normal_at(wx, wz, nx, ny, nz);
+                    h.rotUp[0]=nx; h.rotUp[1]=ny; h.rotUp[2]=nz;
+                    float dot=fwdX*nx+0.0f*ny+fwdZ*nz;
+                    float prx=fwdX-dot*nx, pry=-dot*ny, prz=fwdZ-dot*nz;
+                    float prl=sqrtf(prx*prx+pry*pry+prz*prz);
+                    if (prl>0.001f){h.rot[0]=prx/prl;h.rot[1]=pry/prl;h.rot[2]=prz/prl;}
+                    else            {h.rot[0]=fwdX;h.rot[1]=0.0f;h.rot[2]=fwdZ;}
+                } else {
+                    h.rot[0]=fwdX; h.rot[1]=0.0f; h.rot[2]=fwdZ;
+                    h.rotUp[0]=0.0f; h.rotUp[1]=1.0f; h.rotUp[2]=0.0f;
+                }
+                memcpy(h.initRot, h.rot,   12);
+                memcpy(h.initUp,  h.rotUp, 12);
+                h.type       = scType;
+                h.modelIndex = s_scModelSel;
+
+                auto* b = (uint8_t*)freeEnt;
+                *(void**)(b + 0xA0) = scHandle;
+                *(float*)(b + 0x04) = wx;
+                *(float*)(b + 0x08) = wy;
+                *(float*)(b + 0x0c) = wz;
+                *(float*)(b + 0x10) = h.rot[0];
+                *(float*)(b + 0x14) = h.rot[1];
+                *(float*)(b + 0x18) = h.rot[2];
+                *(float*)(b + 0x1c) = h.rotUp[0];
+                *(float*)(b + 0x20) = h.rotUp[1];
+                *(float*)(b + 0x24) = h.rotUp[2];
+                s_UpdateMatrix(freeEnt);
+
+                g_placements.push_back(h);
+                existX.push_back(wx); existZ.push_back(wz);
+                added++;
+            }
+        }
+        if (added > 0)
+            snprintf(s_scMsg, sizeof(s_scMsg),
+                "+%d piazzati (tot: %d). Ctrl+Z annulla.", added, (int)g_placements.size());
+    }
+
+    // ── Scatter Erba: pannello principale ────────────────────────────
+    static void draw_content_scatter()
+    {
+        uint16_t mapId = get_current_map_id();
+        if (mapId != 0xFFFF) terra_load_type_names(mapId);
+
+        // Ctrl+Z undo
+        if (ImGui::IsKeyDown(ImGuiKey_LeftCtrl) && ImGui::IsKeyPressed(ImGuiKey_Z, false))
+            scatter_undo();
+
+        ImGui::TextColored(ImVec4(0.5f,1.0f,0.5f,1.0f), "Scatter Erba");
+        ImGui::TextDisabled("Dipingi modelli Grass solo sui terreni abilitati.");
+        ImGui::Separator();
+
+        // Parametri pennello
+        ImGui::PushItemWidth(200.0f);
+        ImGui::SliderFloat("Raggio (celle)##sc", &s_scBrushR,     1.0f, 50.0f, "%.0f");
+        ImGui::SliderFloat("Densita'##sc",        &s_scDensity,   0.01f,  1.0f, "%.2f");
+        ImGui::SliderFloat("Spaz. min (m)##sc",   &s_scMinSpacing, 0.5f, 30.0f, "%.1f");
+        ImGui::PopItemWidth();
+        ImGui::Checkbox("Rot. Y random##sc", &s_scRotY);
+        ImGui::SameLine();
+        ImGui::Checkbox("Allinea pendenza##sc", &s_scAlignSlope);
+
+        ImGui::Separator();
+
+        // Filtro tipi terreno
+        ImGui::TextDisabled("Pianta su (terreni abilitati):");
+        if (s_terraTypeCount == 0) {
+            ImGui::TextColored(ImVec4(1.0f,0.6f,0.0f,1.0f),
+                "Nessun tipo rilevato. Apri Terra > Tipo prima.");
+        } else {
+            // Auto-init: abilita tipi erbosi al primo accesso
+            if (!s_scFilterInited) {
+                s_scFilterInited = true;
+                for (int i = 0; i < s_terraTypeCount && i < 16; i++) {
+                    const char* nm = s_terraTypeNames[i];
+                    s_scTypeFilter[i] =
+                        (strstr(nm,"grass") || strstr(nm,"Grass") ||
+                         strstr(nm,"flower")|| strstr(nm,"Flower")||
+                         strstr(nm,"jungle")|| strstr(nm,"earth") ||
+                         strstr(nm,"base")  || strstr(nm,"glass") ||
+                         strstr(nm,"plant") || strstr(nm,"prato"));
+                }
+            }
+            ImGui::Columns(2, "scfc", false);
+            for (int i = 0; i < s_terraTypeCount && i < 16; i++) {
+                ImVec4 tc = ImGui::ColorConvertU32ToFloat4(kTerraTypeColors[i % kTerraNumTypes]);
+                ImGui::PushStyleColor(ImGuiCol_CheckMark, tc);
+                char lbl[300];
+                snprintf(lbl, sizeof(lbl), "[%d] %s##scf", i, s_terraTypeNames[i]);
+                ImGui::Checkbox(lbl, &s_scTypeFilter[i]);
+                ImGui::PopStyleColor();
+                ImGui::NextColumn();
+            }
+            ImGui::Columns(1);
+        }
+
+        ImGui::Separator();
+
+        // Selezione modello Grass
+        ImGui::TextDisabled("Modello Grass da piazzare:");
+        ImGui::BeginChild("##scModList", ImVec2(0.0f, 110.0f), true);
+        {
+            int gi = 0;
+            for (auto& m : g_models) {
+                if (m.type != MapEntityType::Grass && m.type != MapEntityType::Vani) continue;
+                const char* fn = model_filename(m.handle);
+                const char* disp = fn
+                    ? (strrchr(fn,'\\') ? strrchr(fn,'\\')+1 : fn)
+                    : "(handle)";
+                bool sel = (gi == s_scModelSel);
+                if (ImGui::Selectable(disp, sel))
+                    s_scModelSel = sel ? -1 : gi;
+                gi++;
+            }
+            if (gi == 0)
+                ImGui::TextDisabled("Nessun modello. Apri sezione Grass prima.");
+        }
+        ImGui::EndChild();
+
+        ImGui::Separator();
+
+        // Undo button
+        bool hasUndo = !s_scUndoBatches.empty();
+        if (!hasUndo) ImGui::BeginDisabled();
+        if (ImGui::Button("Annulla ultimo##sc")) scatter_undo();
+        if (!hasUndo) ImGui::EndDisabled();
+        ImGui::SameLine();
+        ImGui::TextDisabled("(Ctrl+Z)  Batch: %d", (int)s_scUndoBatches.size());
+
+        ImGui::Separator();
+
+        // Minimappa (canvas tipo, uguale a Terra > Tipo)
+        int  Ni     = terra_N();
+        float vs2   = *(float*)0x022F227C;
+        float wldSz = (Ni > 0 && vs2 > 0.1f) ? (float)Ni * vs2 : 0.0f;
+
+        float plX = -99999.0f, plZ = -99999.0f;
+        {
+            void* pU = *(void**)0x904AA0;
+            if (pU && (uintptr_t)pU > 0xFFFFu) {
+                plX = *(float*)((uint8_t*)pU + 0x10);
+                plZ = *(float*)((uint8_t*)pU + 0x18);
+            }
+        }
+
+        float avail2 = ImGui::GetContentRegionAvail().x - 4.0f;
+        float sz2    = avail2 < 512.0f ? avail2 : 512.0f;
+
+        ImGui::Text("Zoom:%.1fx", s_scMiniZoom); ImGui::SameLine();
+        if (ImGui::SmallButton("1:1##sczr"))
+            { s_scMiniZoom=1.0f; s_scMiniPanX=0.0f; s_scMiniPanZ=0.0f; }
+        ImGui::SameLine();
+        ImGui::TextDisabled("Scroll=zoom  R-drag=sposta  L-clic=pianta");
+
+        // Canvas tipo (refresh se necessario)
+        if (s_terraCanvasDirty || !s_terraCanvasTex) terra_refresh_tex(true);
+        IDirect3DTexture9* dispTex = s_terraCanvasTex;
+
+        if (!dispTex) {
+            ImGui::TextColored(ImVec4(1.0f,0.5f,0.0f,1.0f),
+                "Canvas non disponibile. Apri Terra > Tipo prima.");
+        } else if (sz2 > 0.0f && wldSz > 0.0f) {
+            float viewW = wldSz / s_scMiniZoom;
+            float ux0   = s_scMiniPanX / wldSz;
+            float ux1   = ux0 + viewW / wldSz;
+            // Canvas: riga 0=Z=0=sud → flip Y per nord-up
+            float uyT   = (s_scMiniPanZ + viewW) / wldSz;
+            float uyB   =  s_scMiniPanZ           / wldSz;
+
+            ImVec2 cpos2 = ImGui::GetCursorScreenPos();
+            ImGui::Image((ImTextureID)dispTex, ImVec2(sz2,sz2),
+                ImVec2(ux0,uyT), ImVec2(ux1,uyB));
+            ImDrawList* dl2 = ImGui::GetWindowDrawList();
+
+            // Dots: placement scatter già eseguiti
+            for (auto& h : g_placements) {
+                if (h.type != MapEntityType::Grass && h.type != MapEntityType::Vani) continue;
+                float px2 = cpos2.x + (h.pos[0] - s_scMiniPanX) / viewW * sz2;
+                float pz2 = cpos2.y + (1.0f - (h.pos[2] - s_scMiniPanZ) / viewW) * sz2;
+                if (px2 >= cpos2.x-2 && px2 <= cpos2.x+sz2+2 &&
+                    pz2 >= cpos2.y-2 && pz2 <= cpos2.y+sz2+2)
+                    dl2->AddCircleFilled({px2,pz2}, 2.0f, IM_COL32(0,220,100,200));
+            }
+
+            // Player arrow
+            if (plX > -50000.0f) {
+                float dpx2 = cpos2.x + (plX - s_scMiniPanX) / viewW * sz2;
+                float dpz2 = cpos2.y + (1.0f - (plZ - s_scMiniPanZ) / viewW) * sz2;
+                if (dpx2 >= cpos2.x && dpx2 <= cpos2.x+sz2 &&
+                    dpz2 >= cpos2.y && dpz2 <= cpos2.y+sz2) {
+                    float aFx=0.0f, aFz=-1.0f;
+                    IDirect3DDevice9* pD3D = *ppD3DDevice;
+                    if (pD3D) {
+                        D3DMATRIX mv; pD3D->GetTransform(D3DTS_VIEW, &mv);
+                        float hl = sqrtf(mv._13*mv._13+mv._33*mv._33);
+                        if (hl > 0.01f) { aFx=mv._13/hl; aFz=mv._33/hl; }
+                    }
+                    float sfx=aFx, sfy=-aFz;
+                    const float TIP=9.0f, BH=5.0f, BB=4.0f;
+                    ImVec2 tip2(dpx2+sfx*TIP, dpz2+sfy*TIP);
+                    ImVec2 bL2(dpx2-sfx*BB+(-sfy)*(-BH), dpz2-sfy*BB+sfx*(-BH));
+                    ImVec2 bR2(dpx2-sfx*BB+(-sfy)*( BH), dpz2-sfy*BB+sfx*( BH));
+                    dl2->AddTriangleFilled(tip2,bL2,bR2, IM_COL32(0,255,80,230));
+                    dl2->AddTriangle(tip2,bL2,bR2, IM_COL32(255,255,255,200), 1.5f);
+                }
+            }
+
+            // Interazione mouse
+            if (ImGui::IsItemHovered()) {
+                ImVec2 mp2 = ImGui::GetMousePos();
+                float  u2  = (mp2.x - cpos2.x) / sz2;
+                float  v2  = (mp2.y - cpos2.y) / sz2;
+
+                // Scroll zoom
+                float wheel2 = ImGui::GetIO().MouseWheel;
+                if (wheel2 != 0.0f) {
+                    float oldV2 = viewW;
+                    s_scMiniZoom = ImClamp(s_scMiniZoom*(wheel2>0?1.2f:1.0f/1.2f), 1.0f, 32.0f);
+                    float newV2  = wldSz / s_scMiniZoom;
+                    float mwX2 = s_scMiniPanX + u2*oldV2;
+                    float mwZ2 = s_scMiniPanZ + (1.0f-v2)*oldV2;
+                    s_scMiniPanX = ImClamp(mwX2 - u2*newV2,      0.0f, wldSz-newV2);
+                    s_scMiniPanZ = ImClamp(mwZ2 - (1.0f-v2)*newV2, 0.0f, wldSz-newV2);
+                }
+
+                // Right-drag pan
+                if (ImGui::IsMouseDragging(ImGuiMouseButton_Right)) {
+                    ImVec2 dd2 = ImGui::GetMouseDragDelta(ImGuiMouseButton_Right);
+                    ImGui::ResetMouseDragDelta(ImGuiMouseButton_Right);
+                    float cv = wldSz / s_scMiniZoom;
+                    s_scMiniPanX = ImClamp(s_scMiniPanX - dd2.x/sz2*cv, 0.0f, wldSz-cv);
+                    s_scMiniPanZ = ImClamp(s_scMiniPanZ + dd2.y/sz2*cv, 0.0f, wldSz-cv);
+                }
+
+                // Brush circle indicator
+                float brushPx = s_scBrushR * vs2 / viewW * sz2;
+                dl2->AddCircle(mp2, brushPx, IM_COL32(100,255,100,180), 32, 1.5f);
+                dl2->AddCircle(mp2, 3.0f, IM_COL32(255,255,255,220), 8, 2.0f);
+
+                // Left click/drag → scatter
+                if (ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+                    if (!s_scDragging) {
+                        s_scDragging   = true;
+                        s_scBatchStart = (int)g_placements.size();
+                    }
+                    float wx3 = s_scMiniPanX + u2*viewW;
+                    float wz3 = s_scMiniPanZ + (1.0f-v2)*viewW;
+                    scatter_apply_brush(wx3, wz3);
+                }
+            }
+
+            // Mouse rilasciato → chiudi batch
+            if (s_scDragging && ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
+                s_scDragging = false;
+                int bsz = (int)g_placements.size() - s_scBatchStart;
+                if (bsz > 0) s_scUndoBatches.push_back(bsz);
+            }
+        }
+
+        // Messaggio stato
+        if (s_scMsg[0]) { ImGui::Spacing(); ImGui::TextWrapped("%s", s_scMsg); }
+    }
+
     // ── Content: model thumbnail grid ──
     static void draw_content_models(EditorSection sec)
     {
+        // Carica sidecar mods per la mappa corrente (lazy, una sola volta per mappa)
+        uint16_t curMapId = get_current_map_id();
+        if (curMapId != 0xFFFF) saved_mods_load(curMapId);
+
         if (!g_modelsBuilt) { build_model_list(); match_fs_handles(); }
         if (!s_fsScanned)   { rebuild_fs_models(); match_fs_handles(); }
 
@@ -2357,10 +3150,10 @@ namespace imgui_layer {
 
         ImGui::Text("Sorgente WLD:");
         ImGui::SetNextItemWidth(-1.0f);
-        ImGui::InputText("##wsrc", s_pathSrc, sizeof(s_pathSrc));
+        ImGui::InputText("##wsrc", s_pathSrc, sizeof(s_pathSrc), ImGuiInputTextFlags_ReadOnly);
         ImGui::Text("Output WLD:");
         ImGui::SetNextItemWidth(-1.0f);
-        ImGui::InputText("##wdst", s_pathDst, sizeof(s_pathDst));
+        ImGui::InputText("##wdst", s_pathDst, sizeof(s_pathDst), ImGuiInputTextFlags_ReadOnly);
         ImGui::Separator();
 
         ImGui::Text("Confermati: %d  |  Entities: %d",
@@ -2498,6 +3291,31 @@ namespace imgui_layer {
 
         ImGui::Spacing();
         {
+            bool scAct = (s_section == EditorSection::Scatter);
+            ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 5.0f);
+            ImGui::PushStyleColor(ImGuiCol_Button,
+                scAct ? ImVec4(0.20f,0.52f,0.22f,1.0f) : ImVec4(0.10f,0.30f,0.12f,0.80f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.25f,0.60f,0.28f,1.0f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImVec4(0.30f,0.70f,0.34f,1.0f));
+            if (scAct) {
+                ImVec2 p = ImGui::GetCursorScreenPos();
+                ImGui::GetWindowDrawList()->AddRectFilled(
+                    ImVec2(p.x-4.0f,p.y), ImVec2(p.x-1.0f,p.y+33.0f),
+                    IM_COL32(255,215,55,255));
+            }
+            if (ImGui::Button("Scatter", ImVec2(kSidebarW - 10.0f, 33.0f))) {
+                s_section = (s_section == EditorSection::Scatter)
+                    ? EditorSection::None : EditorSection::Scatter;
+                s_terraCanvasDirty = true; // forza refresh canvas tipo
+            }
+            ImGui::PopStyleColor(3);
+            ImGui::PopStyleVar();
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Pianta modelli Grass/Fiori\nsolo sui terreni erbosi\ntramite pennello sulla minimappa.");
+        }
+
+        ImGui::Spacing();
+        {
             bool mapAct = (s_section == EditorSection::Existing);
             ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 5.0f);
             ImGui::PushStyleColor(ImGuiCol_Button,
@@ -2567,6 +3385,8 @@ namespace imgui_layer {
             draw_existing_entities();
         else if (s_section == EditorSection::Terra)
             draw_terra_content();
+        else if (s_section == EditorSection::Scatter)
+            draw_content_scatter();
         else
             draw_content_models(s_section);
 
@@ -3217,7 +4037,24 @@ namespace imgui_layer {
 
     void draw_map_editor_panel()
     {
+        if (ImGui::IsKeyPressed(ImGuiKey_F5, false))
+            g_showMapEditor = !g_showMapEditor;
+
         if (!g_showMapEditor) return;
+
+        // Rilevatore cambio mappa — resetta minimap, canvas, paths display
+        {
+            static uint16_t s_panelLastMapId = 0xFFFF;
+            uint16_t curMapId = get_current_map_id();
+            if (curMapId != 0xFFFF && curMapId != s_panelLastMapId) {
+                s_panelLastMapId   = curMapId;
+                s_terraMiniMapId   = 0xFFFF;   // forza reload minimap Terra
+                s_terraCanvasDirty = true;      // forza refresh canvas Scatter/Terra
+                s_pathSrc[0]       = '\0';      // forza rebuild path display in Save tab
+                s_pathDst[0]       = '\0';
+            }
+        }
+
         // Ctrl+Z: undo ultimo placement
         if (ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Z, false)) {
             if (!g_placements.empty()) {
