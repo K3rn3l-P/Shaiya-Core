@@ -638,6 +638,7 @@ namespace imgui_layer
         // earliest point in the game loop when ImGui owns the cursor.
         install_dinput_mouse_hook();
         install_dinput_keyboard_hook();
+        init_player_hp_bar();
     }
 
     void shutdown_game_imgui()

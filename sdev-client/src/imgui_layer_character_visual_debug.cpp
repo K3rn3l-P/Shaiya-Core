@@ -37,7 +37,8 @@ namespace imgui_layer
             case CharacterDebugImageSlot::NameBackground: return "Name Background";
             case CharacterDebugImageSlot::NameFrame: return "Name Frame";
             case CharacterDebugImageSlot::HpBarBackground: return "HP Bar Background";
-            case CharacterDebugImageSlot::HpBarFill: return "HP Bar Fill";
+            case CharacterDebugImageSlot::HpBarFill: return "HP Bar Fill (Ally)";
+            case CharacterDebugImageSlot::EnemyHpBarFill: return "HP Bar Fill (Enemy)";
             case CharacterDebugImageSlot::HpBarBorder: return "HP Bar Border";
             case CharacterDebugImageSlot::RankIcon: return "Rank Icon";
             default: return "Unknown";
@@ -417,6 +418,118 @@ namespace imgui_layer
             drawList->AddImage(reinterpret_cast<ImTextureID>(texture), min, fillMax, ImVec2(0.0f, 0.0f), ImVec2(ratio, 1.0f), tint);
         }
 
+        struct HpBarVtx { float x, y, z, rhw; DWORD color; float u, v; };
+        struct HpBarVtxSolid { float x, y, z, rhw; DWORD color; };
+
+        void dx9_quad_textured(IDirect3DDevice9* device, LPDIRECT3DTEXTURE9 tex,
+            float x, float y, float w, float h, float u1)
+        {
+            HpBarVtx v[4] = {
+                { x - 0.5f,       y - 0.5f,       0.f, 1.f, 0xFFFFFFFF, 0.f, 0.f },
+                { x + w - 0.5f,   y - 0.5f,       0.f, 1.f, 0xFFFFFFFF, u1,  0.f },
+                { x - 0.5f,       y + h - 0.5f,   0.f, 1.f, 0xFFFFFFFF, 0.f, 1.f },
+                { x + w - 0.5f,   y + h - 0.5f,   0.f, 1.f, 0xFFFFFFFF, u1,  1.f },
+            };
+            device->SetTexture(0, tex);
+            device->SetFVF(D3DFVF_XYZRHW | D3DFVF_DIFFUSE | D3DFVF_TEX1);
+            device->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, v, sizeof(HpBarVtx));
+        }
+
+        void dx9_quad_solid(IDirect3DDevice9* device, float x, float y, float w, float h, DWORD color)
+        {
+            HpBarVtxSolid v[4] = {
+                { x - 0.5f,       y - 0.5f,       0.f, 1.f, color },
+                { x + w - 0.5f,   y - 0.5f,       0.f, 1.f, color },
+                { x - 0.5f,       y + h - 0.5f,   0.f, 1.f, color },
+                { x + w - 0.5f,   y + h - 0.5f,   0.f, 1.f, color },
+            };
+            device->SetTexture(0, nullptr);
+            device->SetFVF(D3DFVF_XYZRHW | D3DFVF_DIFFUSE);
+            device->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, v, sizeof(HpBarVtxSolid));
+        }
+
+        void draw_hp_bar_dx9(IDirect3DDevice9* device, CCharacter* character, CCharacter* localUser, float anchorX, float anchorY)
+        {
+            if (!device || !character || character->maxHealth <= 0) return;
+            if (character->status == CharacterStatus::Death) return;
+
+            auto barSize = g_characterLayoutDebug.hpBarSize;
+            barSize.x = std::max(barSize.x, 16.0f);
+            barSize.y = std::max(barSize.y, 4.0f);
+
+            auto ratio = std::clamp(
+                static_cast<float>(character->health) / static_cast<float>(character->maxHealth),
+                0.0f, 1.0f);
+
+            auto barX = anchorX - barSize.x * 0.5f + g_characterLayoutDebug.hpBarOffset.x;
+            auto barY = anchorY + g_characterLayoutDebug.hpBarOffset.y;
+
+            bool isEnemy = localUser
+                && localUser->country != Country::Neutral
+                && character->country != Country::Neutral
+                && character->country != localUser->country;
+
+            auto fillSlot = isEnemy ? CharacterDebugImageSlot::EnemyHpBarFill : CharacterDebugImageSlot::HpBarFill;
+            auto fillTex    = get_character_debug_override_texture(fillSlot);
+            auto bgTex      = get_character_debug_override_texture(CharacterDebugImageSlot::HpBarBackground);
+            auto borderTex  = get_character_debug_override_texture(CharacterDebugImageSlot::HpBarBorder);
+
+            // Save render state
+            DWORD oldFvf; device->GetFVF(&oldFvf);
+            IDirect3DBaseTexture9* oldTex = nullptr; device->GetTexture(0, &oldTex);
+            DWORD s_alpha, s_src, s_dst, s_light, s_cull, s_z, s_au, s_av;
+            device->GetRenderState(D3DRS_ALPHABLENDENABLE, &s_alpha);
+            device->GetRenderState(D3DRS_SRCBLEND, &s_src);
+            device->GetRenderState(D3DRS_DESTBLEND, &s_dst);
+            device->GetRenderState(D3DRS_LIGHTING, &s_light);
+            device->GetRenderState(D3DRS_CULLMODE, &s_cull);
+            device->GetRenderState(D3DRS_ZENABLE, &s_z);
+            device->GetSamplerState(0, D3DSAMP_ADDRESSU, &s_au);
+            device->GetSamplerState(0, D3DSAMP_ADDRESSV, &s_av);
+
+            device->SetRenderState(D3DRS_ALPHABLENDENABLE, TRUE);
+            device->SetRenderState(D3DRS_SRCBLEND, D3DBLEND_SRCALPHA);
+            device->SetRenderState(D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA);
+            device->SetRenderState(D3DRS_LIGHTING, FALSE);
+            device->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
+            device->SetRenderState(D3DRS_ZENABLE, FALSE);
+            device->SetSamplerState(0, D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP);
+            device->SetSamplerState(0, D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP);
+
+            // Background
+            if (bgTex)
+                dx9_quad_textured(device, bgTex, barX, barY, barSize.x, barSize.y, 1.0f);
+            else
+                dx9_quad_solid(device, barX, barY, barSize.x, barSize.y, 0xDC161212);
+
+            // Fill (clipped by ratio via UV)
+            if (ratio > 0.0f)
+            {
+                if (fillTex)
+                    dx9_quad_textured(device, fillTex, barX, barY, barSize.x * ratio, barSize.y, ratio);
+                else
+                    dx9_quad_solid(device, barX + 1.f, barY + 1.f, (barSize.x - 2.f) * ratio, barSize.y - 2.f,
+                        isEnemy ? 0xE6D23700u : 0xE6D23737u);
+            }
+
+            // Border
+            if (borderTex)
+                dx9_quad_textured(device, borderTex, barX, barY, barSize.x, barSize.y, 1.0f);
+
+            // Restore render state
+            device->SetSamplerState(0, D3DSAMP_ADDRESSV, s_av);
+            device->SetSamplerState(0, D3DSAMP_ADDRESSU, s_au);
+            device->SetRenderState(D3DRS_ZENABLE, s_z);
+            device->SetRenderState(D3DRS_CULLMODE, s_cull);
+            device->SetRenderState(D3DRS_LIGHTING, s_light);
+            device->SetRenderState(D3DRS_DESTBLEND, s_dst);
+            device->SetRenderState(D3DRS_SRCBLEND, s_src);
+            device->SetRenderState(D3DRS_ALPHABLENDENABLE, s_alpha);
+            device->SetFVF(oldFvf);
+            device->SetTexture(0, oldTex);
+            if (oldTex) oldTex->Release();
+        }
+
         void draw_character_debug_images_controls()
         {
             ImGui::SetNextItemOpen(false, ImGuiCond_Appearing);
@@ -487,8 +600,7 @@ namespace imgui_layer
         {
             if (!g_showCharacterLayoutDebugPanel)
                 return;
-            if (!g_characterLayoutDebug.drawGuides && !g_characterLayoutDebug.drawHpBar
-                && !g_characterLayoutDebug.drawRankGuide)
+            if (!g_characterLayoutDebug.drawGuides && !g_characterLayoutDebug.drawRankGuide)
                 return;
             if (!is_anchor_valid())
                 return;
@@ -497,7 +609,7 @@ namespace imgui_layer
             if (!user)
                 return;
 
-            auto drawList = ImGui::GetForegroundDrawList();
+            auto drawList = ImGui::GetBackgroundDrawList();
             auto anchor = g_characterLayoutAnchorScreen;
 
             auto titleCenter = ImVec2(anchor.x + g_characterLayoutDebug.titleCenterOffset.x, anchor.y + g_characterLayoutDebug.titleCenterOffset.y);
@@ -533,9 +645,7 @@ namespace imgui_layer
                 }
             }
 
-            // Rank icon overlay — posizionato relativo all'anchor del nameplate
-            // (stesso sistema di title/name/hpbar). Usa "Rank Icon Offset" per allineare
-            // all'icona nativa: abilita Edit Rank, guarda dove compare l'icona e aggiusta.
+            // Rank icon overlay — solo debug locale
             {
                 auto rankOrigin = ImVec2(
                     anchor.x + g_characterLayoutDebug.rankIconOffset.x,
@@ -553,50 +663,6 @@ namespace imgui_layer
                     drawList->AddText(ImVec2(rankOrigin.x, rankOrigin.y - 18.0f), IM_COL32(255, 200, 80, 255), "Rank");
                 }
             }
-
-            if (!g_characterLayoutDebug.drawHpBar)
-                return;
-
-            auto barSize = g_characterLayoutDebug.hpBarSize;
-            barSize.x = std::max(barSize.x, 16.0f);
-            barSize.y = std::max(barSize.y, 4.0f);
-
-            auto barMin = ImVec2(anchor.x + g_characterLayoutDebug.hpBarOffset.x, anchor.y + g_characterLayoutDebug.hpBarOffset.y);
-            auto barMax = ImVec2(barMin.x + barSize.x, barMin.y + barSize.y);
-            auto ratio = user->maxHealth > 0 ? std::clamp(static_cast<float>(user->health) / static_cast<float>(user->maxHealth), 0.0f, 1.0f) : 0.0f;
-            auto fillTexture = get_character_debug_override_texture(CharacterDebugImageSlot::HpBarFill);
-            auto bgTexture = get_character_debug_override_texture(CharacterDebugImageSlot::HpBarBackground);
-            auto borderTexture = get_character_debug_override_texture(CharacterDebugImageSlot::HpBarBorder);
-
-            if (bgTexture)
-                draw_texture_rect(drawList, bgTexture, barMin, barMax);
-            else
-                drawList->AddRectFilled(barMin, barMax, IM_COL32(22, 18, 18, 220), 3.0f);
-
-            if (fillTexture)
-                draw_texture_rect_fill_x(drawList, fillTexture, barMin, barMax, ratio);
-            else
-            {
-                auto fillMax = ImVec2(barMin.x + (barSize.x - 2.0f) * ratio, barMax.y - 1.0f);
-                drawList->AddRectFilled(ImVec2(barMin.x + 1.0f, barMin.y + 1.0f), fillMax, IM_COL32(210, 55, 55, 230), 2.0f);
-            }
-
-            if (borderTexture)
-                draw_texture_rect(drawList, borderTexture, barMin, barMax);
-            else
-                drawList->AddRect(barMin, barMax, IM_COL32(255, 255, 255, 200), 3.0f, 0, 1.2f);
-
-            if (g_characterLayoutDebug.drawGuides)
-                drawList->AddText(ImVec2(barMin.x, barMin.y - 18.0f), IM_COL32(255, 170, 170, 255), "HP Bar");
-
-            if (!g_characterLayoutDebug.drawHpText)
-                return;
-
-            char hpText[64]{};
-            std::snprintf(hpText, sizeof(hpText), "%d / %d", std::max(0, user->health), std::max(0, user->maxHealth));
-            auto textSize = ImGui::CalcTextSize(hpText);
-            auto textPos = ImVec2(barMin.x + (barSize.x - textSize.x) * 0.5f, barMin.y + g_characterLayoutDebug.hpTextOffsetY);
-            drawList->AddText(textPos, IM_COL32(255, 255, 255, 255), hpText);
         }
 
         void draw_inspector_section(CCharacter* user)
@@ -1048,15 +1114,28 @@ namespace imgui_layer
 
     void capture_character_layout_anchor(CCharacter* user, float x, float y, float extrusion)
     {
+        if (!user)
+            return;
+
+        auto now = GetTickCount();
+        g_characterScreenAnchors[user->id] = {ImVec2(x, y), now};
+
+        if (g_showPlayerHpBar && g_characterLayoutDebug.drawHpBar)
+        {
+            auto device = g_var ? g_var->camera.device : nullptr;
+            if (device)
+                draw_hp_bar_dx9(device, user, get_local_user(), x, y);
+        }
+
         auto* localUser = get_local_user();
-        if (!user || !localUser || user != localUser)
+        if (!localUser || user != localUser)
             return;
 
         g_characterLayoutAnchorValid = true;
         g_characterLayoutAnchorScreen = ImVec2(x, y);
         g_characterLayoutAnchorDepth = extrusion;
         g_characterLayoutAnchorUserId = user->id;
-        g_characterLayoutAnchorTick = GetTickCount();
+        g_characterLayoutAnchorTick = now;
     }
 
     std::string build_character_layout_dump()
@@ -1131,8 +1210,33 @@ namespace imgui_layer
         return dump;
     }
 
+    void draw_all_hp_bars()
+    {
+        // HP bars now drawn via DX9 in capture_character_layout_anchor (game render loop)
+    }
+
+    void init_player_hp_bar()
+    {
+        auto& fill = g_characterDebugImageOverrides[static_cast<std::size_t>(CharacterDebugImageSlot::HpBarFill)];
+        if (fill.path.empty())
+        {
+            fill.path = "data/assets/ui/pg_hp_bar.png";
+            fill.enabled = true;
+        }
+
+        auto& enemyFill = g_characterDebugImageOverrides[static_cast<std::size_t>(CharacterDebugImageSlot::EnemyHpBarFill)];
+        if (enemyFill.path.empty())
+        {
+            enemyFill.path = "data/assets/ui/en_hp_bar.png";
+            enemyFill.enabled = true;
+        }
+    }
+
     void draw_character_layout_debug_panel()
     {
+        draw_all_hp_bars();
+        draw_local_character_guides();
+
         if (!g_showCharacterLayoutDebugPanel)
             return;
 
@@ -1140,7 +1244,6 @@ namespace imgui_layer
         if (!ImGui::Begin("Character Visual Debug", &g_showCharacterLayoutDebugPanel, ImGuiWindowFlags_NoCollapse))
         {
             ImGui::End();
-            draw_local_character_guides();
             return;
         }
 
@@ -1192,6 +1295,5 @@ namespace imgui_layer
         ImGui::EndChild();
 
         ImGui::End();
-        draw_local_character_guides();
     }
 }

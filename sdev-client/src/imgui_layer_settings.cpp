@@ -379,6 +379,7 @@ namespace imgui_layer {
             draw_settings_toggle_row("Colours", g_showNameColors != 0, "/colour on", "/colour off");
             draw_settings_toggle_row("FPS Boost", g_fpsBoost != 0, "/fpsboost on", "/fpsboost off");
             draw_settings_toggle_row("Effects", g_showEffects != 0, "/effects on", "/effects off");
+            draw_settings_toggle_row("HP Bars", g_showPlayerHpBar != 0, "/hpbars on", "/hpbars off");
             ImGui::PopStyleVar();
         }
         ImGui::End();

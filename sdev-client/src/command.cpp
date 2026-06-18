@@ -596,6 +596,18 @@ int command_handler(char* text)
         return 0;
     }
 
+    if (input == "/hpbars on")
+    {
+        g_showPlayerHpBar = true;
+        return 0;
+    }
+
+    if (input == "/hpbars off")
+    {
+        g_showPlayerHpBar = false;
+        return 0;
+    }
+
     if (input == "/font")
     {
         if (g_chooseFontWorkerBusy.load())

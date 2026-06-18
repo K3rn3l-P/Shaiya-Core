@@ -83,7 +83,7 @@ namespace imgui_layer
     constexpr const char* kSettingsPanelXKey = "SETTINGS_PANEL_X";
     constexpr const char* kSettingsPanelYKey = "SETTINGS_PANEL_Y";
     constexpr auto kSettingsButtonSize = ImVec2(32.0f, 33.0f);
-    constexpr auto kSettingsPanelSize = ImVec2(210.0f, 270.0f);
+    constexpr auto kSettingsPanelSize = ImVec2(210.0f, 298.0f);
     constexpr auto kDefaultNpcButtonPosition = ImVec2(458.0f, 938.0f);
     constexpr const char* kNpcBtnXKey = "NPC_BTN_X";
     constexpr const char* kNpcBtnYKey = "NPC_BTN_Y";
@@ -393,17 +393,24 @@ namespace imgui_layer
         bool drawTitleGuide = true;
         bool drawNameGuide = true;
         bool drawHpBar = true;
-        bool drawHpText = true;
+        bool drawHpText = false;
         bool drawRankGuide = true;
         ImVec2 titleCenterOffset = ImVec2(0.0f, -54.0f);
         ImVec2 titleBoxSize = ImVec2(180.0f, 48.0f);
         ImVec2 nameCenterOffset = ImVec2(0.0f, -16.0f);
         ImVec2 nameBoxSize = ImVec2(150.0f, 18.0f);
-        ImVec2 hpBarOffset = ImVec2(-50.0f, -30.0f);
-        ImVec2 hpBarSize = ImVec2(100.0f, 8.0f);
+        // hpBarOffset.x = shift orizzontale dal centro (0 = centrata), .y = shift verticale
+        ImVec2 hpBarOffset = ImVec2(0.0f, -15.0f);
+        ImVec2 hpBarSize = ImVec2(80.0f, 8.0f);
         float hpTextOffsetY = -18.0f;
         ImVec2 rankIconOffset = ImVec2(-90.0f, -32.0f);
         ImVec2 rankIconSize = ImVec2(32.0f, 32.0f);
+    };
+
+    struct CharacterScreenAnchor
+    {
+        ImVec2 screen;
+        DWORD tick;
     };
 
     inline CharacterLayoutDebugState g_characterLayoutDebug{};
@@ -413,6 +420,7 @@ namespace imgui_layer
     inline float g_characterLayoutAnchorDepth = 0.0f;
     inline uint32_t g_characterLayoutAnchorUserId = 0;
     inline DWORD g_characterLayoutAnchorTick = 0;
+    inline std::unordered_map<uint32_t, CharacterScreenAnchor> g_characterScreenAnchors;
 
     struct AnimatedVisualFrame
     {
@@ -451,6 +459,7 @@ namespace imgui_layer
         NameFrame,
         HpBarBackground,
         HpBarFill,
+        EnemyHpBarFill,
         HpBarBorder,
         RankIcon,
         Count
@@ -650,7 +659,9 @@ namespace imgui_layer
     // imgui_layer_character_visual_debug.cpp
     void capture_character_layout_anchor(CCharacter* user, float x, float y, float extrusion);
     void draw_character_layout_debug_panel();
+    void draw_all_hp_bars();
     std::string build_character_layout_dump();
+    void init_player_hp_bar();
 
     // imgui_layer_map_editor.cpp
     void draw_map_editor_panel();

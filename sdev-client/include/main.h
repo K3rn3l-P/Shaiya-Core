@@ -73,6 +73,7 @@ inline int g_showMobEffects = false;
 inline int g_fpsBoost = false;
 inline int g_showTitles = true;
 inline int g_showNameColors = true;
+inline int g_showPlayerHpBar = true;
 inline float g_cameraLimit = 30.0f;
 inline shaiya::Unknown* g_uiRoot1 = nullptr;
 inline shaiya::Unknown* g_uiRoot2 = nullptr;
