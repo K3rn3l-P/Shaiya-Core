@@ -7,6 +7,7 @@
 
 #include <util/util.h>
 #include "include/main.h"
+#include "include/etain_shield.h"
 
 namespace
 {
@@ -960,6 +961,127 @@ namespace
             jmp u0x468140
         }
     }
+
+    // ===================================================================
+    // AntiDupe — blocca item bound (ItemInfo.reqOg>=1) su drop/trade/battle/
+    // player-market/guild-WH. Player WH (magazzino personale) ESCLUSO.
+    // Ogni naked calcola il puntatore ITEM e chiama etain_shield::block_bound_item
+    // (che gestisce toggle + null-check + reqOg>=1). Se true → salta al ramo di
+    // rifiuto nativo del canale; altrimenti esegue l'istruzione originale.
+    // ===================================================================
+
+    // Drop: hook 0x469C2E. ITEM=[edi+edx*4+0x1C0]. orig(7). block 0x46A1AA.
+    unsigned u0x469C35 = 0x469C35;
+    unsigned u0x46A1AA = 0x46A1AA;
+    void __declspec(naked) naked_0x469C2E()
+    {
+        __asm
+        {
+            pushad
+            mov eax,[edi+edx*4+0x1C0]
+            push eax
+            call etain_shield::block_bound_item
+            add esp,4
+            test al,al
+            popad
+            jnz _blocked
+            mov ebp,[edi+edx*4+0x1C0]
+            jmp u0x469C35
+        _blocked:
+            jmp u0x46A1AA
+        }
+    }
+
+    // Trade: hook 0x47DD80. ITEM=[eax]. orig(5). block 0x47E0DA.
+    unsigned u0x47DD85 = 0x47DD85;
+    unsigned u0x47E0DA = 0x47E0DA;
+    void __declspec(naked) naked_0x47DD80()
+    {
+        __asm
+        {
+            pushad
+            mov eax,[eax]
+            push eax
+            call etain_shield::block_bound_item
+            add esp,4
+            test al,al
+            popad
+            jnz _blocked
+            mov eax,[eax]
+            mov esi,[eax+0x30]
+            jmp u0x47DD85
+        _blocked:
+            jmp u0x47E0DA
+        }
+    }
+
+    // Battle: hook 0x48C58C. ITEM=[eax]. orig(5). block 0x48C902.
+    unsigned u0x48C591 = 0x48C591;
+    unsigned u0x48C902 = 0x48C902;
+    void __declspec(naked) naked_0x48C58C()
+    {
+        __asm
+        {
+            pushad
+            mov eax,[eax]
+            push eax
+            call etain_shield::block_bound_item
+            add esp,4
+            test al,al
+            popad
+            jnz _blocked
+            mov eax,[eax]
+            mov esi,[eax+0x30]
+            jmp u0x48C591
+        _blocked:
+            jmp u0x48C902
+        }
+    }
+
+    // Player Market: hook 0x487625. ITEM=[ebp+eax*4+0x1C0]. orig(7). block 0x487978.
+    unsigned u0x48762C = 0x48762C;
+    unsigned u0x487978 = 0x487978;
+    void __declspec(naked) naked_0x487625()
+    {
+        __asm
+        {
+            pushad
+            mov ecx,[ebp+eax*4+0x1C0]
+            push ecx
+            call etain_shield::block_bound_item
+            add esp,4
+            test al,al
+            popad
+            jnz _blocked
+            mov eax,[ebp+eax*4+0x1C0]
+            jmp u0x48762C
+        _blocked:
+            jmp u0x487978
+        }
+    }
+
+    // Guild WH: hook 0x476290. ITEM=[esi]. orig(5). block 0x476345.
+    unsigned u0x476295 = 0x476295;
+    unsigned u0x476345 = 0x476345;
+    void __declspec(naked) naked_0x476290()
+    {
+        __asm
+        {
+            pushad
+            mov eax,[esi]
+            push eax
+            call etain_shield::block_bound_item
+            add esp,4
+            test al,al
+            popad
+            jnz _blocked
+            mov esi,[esi]
+            mov ebx,[esi+0x30]
+            jmp u0x476295
+        _blocked:
+            jmp u0x476345
+        }
+    }
 }
 
 void hook::utilities()
@@ -993,6 +1115,14 @@ void hook::utilities()
     util::detour((void*)0x473ED7, naked_0x473ED7, 7);
     util::detour((void*)0x473FFD, naked_0x473FFD, 7);
     util::detour((void*)0x474196, naked_0x474196, 7);
+
+    // AntiDupe — blocca item bound (reqOg>=1). Player WH escluso. Toggle [AntiDupe] BlockBoundItems
+    // letto in block_bound_item (runtime): se off, i detour eseguono solo l'originale.
+    util::detour((void*)0x469C2E, naked_0x469C2E, 7);  // Drop
+    util::detour((void*)0x47DD80, naked_0x47DD80, 5);  // Trade
+    util::detour((void*)0x48C58C, naked_0x48C58C, 5);  // Battle
+    util::detour((void*)0x487625, naked_0x487625, 7);  // Player Market
+    util::detour((void*)0x476290, naked_0x476290, 5);  // Guild WH
 
     // Enable helmets and mantles to drop.
     // The original server rejects item type 16 (helmet) and 24 (mantle) here.

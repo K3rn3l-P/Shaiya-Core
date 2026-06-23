@@ -964,6 +964,19 @@ void hook::patch()
     static constexpr unsigned char kLoginSplashSkipRenderBlock[] = {0xE9, 0xD8, 0x02, 0x00, 0x00};
     static constexpr unsigned char kLoginSplashSkipAfterResourceInit[] = {0xE9, 0x96, 0x02, 0x00, 0x00};
 
+    // ===================================================================
+    // DELAY FIX SKILL  (DISABILITATO — decommentare per attivare)
+    // ===================================================================
+    // Fix "delay skill" melee (warrior/fighter ed altri) — EP6 Essential.
+    // A 0x44B308 c'è `JZ 0x44C2FA` (0F 84 <rel32>): quando il LOS verso il target è
+    // libero (FUN_00440aa0 ritorna !=0), il client inietta un attacco base 0x503
+    // (FUN_005eba30) PRIMA di proseguire la skill a 0x44C2FA → è quello che ritarda
+    // la skill. Rendere il salto incondizionato (0F 84 -> 90 E9, NOP + JMP, stesso
+    // rel32 -> JMP 0x44C2FA) salta l'invio dell'attacco base → la skill parte subito.
+    // Equivale al fix community "shen1l 0x44B308 je->jmp" ma corretto per questo binario.
+    // NOTA: lasciato OFF finché non si conferma in-game che serve davvero.
+    // static constexpr unsigned char kSkillDelaySkipPreAttack[] = {0x90, 0xE9};
+
     // -- Startup and login ---------------------------------------------------
     config::install_skip_updater();
 
@@ -973,6 +986,9 @@ void hook::patch()
     util::write_memory((void*)0x434ACD, &kLoginSplashSkipPostInitDelay, sizeof(kLoginSplashSkipPostInitDelay));
     util::write_memory((void*)0x4346BB, kLoginSplashSkipRenderBlock, sizeof(kLoginSplashSkipRenderBlock));
     util::write_memory((void*)0x434A97, kLoginSplashSkipAfterResourceInit, sizeof(kLoginSplashSkipAfterResourceInit));
+
+    // -- DELAY FIX SKILL (DISABILITATO — decommentare entrambe le righe + la constexpr sopra) --
+    // util::write_memory((void*)0x44B308, kSkillDelaySkipPreAttack, sizeof(kSkillDelaySkipPreAttack));
 
     // Background rendering arguments
     util::write_memory((void*)0x434742, kPushZero, sizeof(kPushZero));

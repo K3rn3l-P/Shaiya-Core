@@ -23,6 +23,7 @@ namespace packet
     void handler_0x1F04(GameRewardItemGetOutgoing* incoming);
     void handler_0x1F05(GameRewardItemListIndexOutgoing* incoming);
     void handler_0x1F06(GameRewardItemEventEndedOutgoing* incoming);
+    void check_and_send_heartbeat();
 
     void patch_quantity_limit()
     {
@@ -597,6 +598,7 @@ void __declspec(naked) naked_0x59EC88()
     }
 }
 
+
 unsigned u0x5F1E17 = 0x5F1E17;
 void __declspec(naked) naked_0x5F1E10()
 {
@@ -606,7 +608,7 @@ void __declspec(naked) naked_0x5F1E10()
 
         movzx eax,word ptr [esp+0x24]
 
-        // --- Roulette / Reward Item (game phase) ---
+        // --- Roulette / Reward Item / Teleport (game phase) ---
         cmp eax,0x834
         je roulette_packet
         cmp eax,0x835
@@ -661,22 +663,56 @@ void __declspec(naked) naked_0x5F1E10()
 
         popad
         ret
-
     }
 }
 
 // Hook a 0x5EC5D5 — dentro FUN_005ec5a0 (sender 0xA101 RSA).
 // Displaced: PUSH 0x83 (5 byte). EDX = &buf (opcode+key_size+RSA_key, 131 byte).
-// Appende token[4] a buf+131, cambia len 131→135 (0x87).
-// Server (hook 0x404548 in sdev-login) legge il token da [EBP+0x83] = iVar2+133.
-extern uint8_t g_sah_token[8];  // sah_decrypt.cpp: SHA256(game.exe)[0:8]
+// Struttura pacchetto 0xA101 estesa:
+//   buf[0..130]   = opcode+key_size+RSA_key (131 byte, originale)
+//   buf[131..134] = auth_token (4 byte, HMAC time-windowed)
+//   buf[135..142] = sah_token (8 byte, SHA256 .text memoria)
+//   buf[143..174] = hwid (32 byte ASCII, da device.id dell'Updater)
+//   buf[175]      = tamper_flags (1 byte: bit0=DLL_INJECT, bit1=DEBUGGER, bit2=MEM_PATCH)
+//   buf[176..239] = hwid_sig (64 byte ASCII, da device.id.sig — verifica HMAC lato server)
+//   len = 0xF0 (240)
+// Server (sdev-login hook 0x404548): auth_token @ [EBP+0x83], sah_token @ [EBP+0x87],
+//   hwid @ [EBP+0x8F], tamper_flags @ [EBP+0xAF], hwid_sig @ [EBP+0xB0]
+extern uint8_t g_sah_token[8];   // sah_decrypt.cpp: SHA256(.text memoria)[0:8]
 extern void    wait_sah_token_3s(); // sah_decrypt.cpp: spinlock finché token pronto (max 3s)
 
-// Hook a 0x5EC5D5 — dentro FUN_005ec5a0 (sender 0xA101 RSA).
-// Displaced: PUSH 0x83 (5 byte). EDX = &buf (opcode+key_size+RSA_key, 131 byte).
-// Appende auth_token[4] a buf+131 e sah_token[8] a buf+135, cambia len 131→143 (0x8F).
-// Server (hook 0x404548 in sdev-login) legge auth_token da [EBP+0x83], sah_token da [EBP+0x87].
-// wait_sah_token_3s() garantisce che il decrypt sia completato prima di leggere g_sah_token.
+// Helper cdecl: copia HWID (buf[143..174]) + tamper_flags (buf[175]) + sig (buf[176..239]).
+// Esegue check sincrono del debugger prima di leggere i flags.
+//
+// tamper_flags bit map:
+//   bit0 = DLL_INJECT    bit1 = DEBUGGER    bit2 = MEM_PATCH  bit3 = CHEAT_PROC
+//   bit4 = HWID_SIG_ABSENT (device.id.sig assente → HWID vuoto, sdev-login disconnette)
+static void __cdecl append_security_data(char* buf)
+{
+    anti_tamper::check_now();
+    const char* h = hwid::get();
+
+    uint8_t extra_flags = 0;
+    if (hwid::is_tampered())
+        extra_flags |= 0x10;  // HWID_SIG_ABSENT
+
+    size_t hlen = 0;
+    while (h[hlen] && hlen < 32) ++hlen;
+    std::memcpy(buf + 143, h, hlen);
+    if (hlen < 32)
+        std::memset(buf + 143 + hlen, '\0', 32 - hlen);
+
+    buf[175] = static_cast<char>(anti_tamper::get_tamper_flags() | extra_flags);
+
+    // hwid_sig → buf[176..239] (64 byte ASCII, grezza — verifica HMAC avviene in sdev-login)
+    const char* sig = hwid::get_sig();
+    size_t slen = 0;
+    while (sig[slen] && slen < 64) ++slen;
+    std::memcpy(buf + 176, sig, slen);
+    if (slen < 64)
+        std::memset(buf + 176 + slen, '\0', 64 - slen);
+}
+
 unsigned u0x5EC5DA = 0x5EC5DA;
 void __declspec(naked) naked_0x5EC5D5()
 {
@@ -685,19 +721,23 @@ void __declspec(naked) naked_0x5EC5D5()
         pushad
         // pushad frame: [esp+0]=EDI [esp+4]=ESI [esp+8]=EBP [esp+12]=ESP_orig
         //               [esp+16]=EBX [esp+20]=EDX [esp+24]=ECX [esp+28]=EAX
-        call wait_sah_token_3s         // blocca finché g_sah_token_ready (cdecl, no args)
-        call shaiya::CNetwork::ComputeToken   // EAX = HMAC token (cdecl, no args)
-        mov  ecx, eax                          // salva auth token in ECX
-        mov  edx, dword ptr [esp + 20]         // EDX = &buf
-        mov  dword ptr [edx + 131], ecx        // auth token → buf[131..134]
-        // SAH token (8 byte): g_sah_token → buf[135..142]
+        call wait_sah_token_3s              // blocca finché g_sah_token_ready
+        call shaiya::CNetwork::ComputeToken // EAX = auth_token (cdecl, no args)
+        mov  ecx, eax                       // salva auth_token in ECX
+        mov  edx, dword ptr [esp + 20]      // EDX = &buf (originale prima di pushad)
+        mov  dword ptr [edx + 131], ecx     // auth_token → buf[131..134]
+        // sah_token (8 byte) → buf[135..142]
         lea  edi, [edx + 135]
         mov  eax, dword ptr [g_sah_token]
         mov  dword ptr [edi], eax
         mov  eax, dword ptr [g_sah_token + 4]
         mov  dword ptr [edi + 4], eax
+        // hwid + tamper_flags + hwid_sig → buf[143..239]
+        push edx
+        call append_security_data
+        add  esp, 4
         popad
-        push 0x8F          // len = 143 (131 + 4 auth_token + 8 sah_token)
+        push 0xF0      // len = 240 (131 + 4 + 8 + 32 + 1 + 64)
         jmp  u0x5EC5DA
     }
 }

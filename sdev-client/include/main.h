@@ -20,6 +20,7 @@ inline constexpr unsigned kClientEmojiTokenWindowMessage = 0x8000 + 0x4A5;
 inline constexpr unsigned kClientGMCommandWindowMessage = 0x8000 + 0x4A6;
 inline constexpr unsigned kClientTeleportListWindowMessage = 0x8000 + 0x4A7;
 inline constexpr unsigned kClientTeleportMoveWindowMessage = 0x8000 + 0x4A8;
+inline constexpr unsigned kClientTamperReportMsg          = 0x8000 + 0x4A9;
 void queue_client_sysmsg(int chatType, int messageNumber);
 void flush_client_sysmsg_queue();
 void tick_client_welcome_sysmsg();
@@ -40,8 +41,10 @@ const char* get_custom_eft_name_from_ui();
 
 namespace hook
 {
+    void compute_game_hash();   // SHA256(.text) PRIMA dei detour — chiamare per primo in Main()
     void sah_decrypt_init();
     void sah_decrypt_teardown();
+    void anti_tamper();
     void command();
     void imgui_layer();
     void item_icon();
@@ -56,6 +59,43 @@ namespace hook
     void unicode();
     void vehicle();
     void window();
+}
+
+namespace hwid
+{
+    // Restituisce l'HWID stabile dall'Updater (%LOCALAPPDATA%\Shaiya_Duff_Updater\device.id).
+    // Stringa 32-char hex; vuota se file assente o sig assente.
+    const char* get();
+    // Restituisce la firma grezza da device.id.sig (64 hex chars), o "" se assente.
+    // La firma NON è verificata client-side — verifica avviene solo in sdev-login.
+    const char* get_sig();
+    // true se device.id.sig era presente (sig inviata al server per verifica HMAC)
+    bool is_signed();
+    // true se device.id.sig era assente (HWID vuoto, HWID_MISSING lato server)
+    bool is_tampered();
+}
+
+namespace anti_tamper
+{
+    // Bitmask accumulativo dei check anti-tamper
+    //   bit0=DLL_INJECT  bit1=DEBUGGER  bit2=MEM_PATCH  bit3=CHEAT_PROC
+    uint8_t get_tamper_flags();
+    // Check sincrono eseguito al momento del login — cattura debugger attaccato dopo t=0.
+    void check_now();
+}
+
+namespace window
+{
+    // HWND della finestra di gioco subclassata — valido dopo il primo frame.
+    HWND get_game_hwnd();
+}
+
+namespace sec_token
+{
+    // Token di sessione sicurezza (64 hex chars) ricevuto dall'updater via SDEV_SEC_TOKEN.
+    // Letto e cancellato dall'env a DLL_PROCESS_ATTACH. Usato da anti_tamper per HTTP report.
+    // Vuoto se il gioco è stato lanciato senza updater (bypass).
+    const char* get();
 }
 
 namespace name_color

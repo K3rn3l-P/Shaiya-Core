@@ -3,6 +3,7 @@
 #include <shaiya/include/network/TP_MAIN.h>
 #include <shaiya/include/network/game/outgoing/1F00.h>
 #include "include/main.h"
+#include "include/security_logger.h"
 #include "include/shaiya/CGameData.h"
 #include "include/shaiya/Configuration.h"
 #include "include/shaiya/CUser.h"
@@ -127,6 +128,8 @@ unsigned u0x47BDA7 = 0x47BDA7;
 
 static void on_user_enter_world(CUser* user)
 {
+    security_logger::log("server", user->username.data(), "PLAYER_ENTER_WORLD", nullptr);
+
     if (Configuration::RewardBarEnabled)
         RewardItemEvent::send(user);
     if (Configuration::RouletteEnabled)

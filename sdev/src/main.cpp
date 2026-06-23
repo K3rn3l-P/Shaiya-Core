@@ -1,5 +1,6 @@
 #include <util/util.h>
 #include "include/main.h"
+#include "include/security_logger.h"
 #include "include/shaiya/Configuration.h"
 #include "include/shaiya/CUser.h"
 #include "include/shaiya/Synergy.h"
@@ -7,6 +8,8 @@ using namespace shaiya;
 
 void user_leave_world_hook(CUser* user)
 {
+    security_logger::log("server", user->username.data(), "PLAYER_LEAVE_WORLD", nullptr);
+    security_logger::invalidate_session(user->username.data());
     g_itemSetSynergies.erase(user->id);
 }
 
@@ -94,6 +97,7 @@ void Main()
     Configuration::LoadServerConfig();
     Configuration::LoadTeleportDestinations();
     Configuration::LoadEtainShield();
+    security_logger::init();  // worker thread ODBC — avvia dopo config, prima degli hook IOCP
 
     // CUser::CUser
     util::detour((void*)0x455165, naked_0x455165, 6);

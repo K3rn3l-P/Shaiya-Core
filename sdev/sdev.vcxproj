@@ -52,6 +52,7 @@
     <ClCompile Include="src\packet_character.cpp" />
     <ClCompile Include="src\dllmain.cpp" />
     <ClCompile Include="src\connection_guard.cpp" />
+    <ClCompile Include="src\security_logger.cpp" />
     <ClCompile Include="src\main.cpp" />
     <ClCompile Include="src\packet_gem.cpp" />
     <ClCompile Include="src\raid_150.cpp" />

@@ -462,7 +462,11 @@ namespace shaiya
         tick32_t etainLastMoveTick;              //0x6300  tick of last validated move
         uint8_t etainViolationCount;             //0x6304  consecutive violations
         PAD(3);                                  //0x6305  alignment padding
-        PAD(20);                                 //0x6308  reserved
+
+        // EtainShield — anti-cutting per-user state (tick fine finestra post-attacco)
+        tick32_t etainCuttingUntil;              //0x6308  tick fine lock (0 = nessuna finestra)
+        int32_t  etainCuttingSkillId;            //0x630C  skillId ultimo attacco (-1 = normale)
+        PAD(12);                                 //0x6310  reserved
         // 0x631C
 
         static void AddExpFromUser(CUser* user/*esi*/, unsigned lastTargetId, int exp, bool isQuest);

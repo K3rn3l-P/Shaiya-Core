@@ -21,6 +21,11 @@ namespace etain_shield
     /// Call on teleport, zone change, or any server-initiated position change.
     void reset_tracking(shaiya::CUser* user);
 
+    /// Disconnessione reale della sessione live (closesocket via FUN_004ec760,
+    /// sotto la critical section del manager utenti). Verificato su ps_game.exe.
+    /// Settare CUser::closeBySession=1 a mano NON disconnette — usare questo.
+    void kick_user(shaiya::CUser* user);
+
     // --- AntiRangeHack ---
 
     /// PVE range pre-check (0x458000 detour).  Returns 1=allow, 0=block.
@@ -34,4 +39,12 @@ namespace etain_shield
 
     /// Basic attack on mob (0x503 packet).  Returns 1=allow, 0=drop.
     int validate_attack_mob(shaiya::CUser* user, shaiya::GameCharAttackMobIncoming* packet);
+
+    // --- AntiDupe (item bound) ---
+
+    /// True se l'item slot va bloccato perché bound (ItemInfo.reqOg >= 1:
+    /// AccountBound/CharacterBound) e il toggle [AntiDupe] BlockBoundItems è attivo.
+    /// Fa tutti i null-check internamente. Usato dai detour anti-dupe in utilities.cpp
+    /// (drop / trade / battle / player market / guild warehouse). Player WH ESCLUSO.
+    bool block_bound_item(void* item);
 }

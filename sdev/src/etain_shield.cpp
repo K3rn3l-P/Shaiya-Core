@@ -1,9 +1,11 @@
 #include <cmath>
+#include <mutex>
 #include <util/util.h>
 #include <shaiya/include/network/game/incoming/0500.h>
 #include <shaiya/include/network/game/outgoing/0200.h>
 #include "include/main.h"
 #include "include/etain_shield_config.h"
+#include "include/security_logger.h"
 #include "include/shaiya/CObject.h"
 #include "include/shaiya/CMob.h"
 #include "include/shaiya/CUser.h"
@@ -53,13 +55,27 @@ namespace etain_shield
     //  Helpers
     // ===================================================================
 
-    /// Euclidean 2D ground distance between two positions.
+    /// Euclidean 2D ground distance (speed hack: ignora Y per non flaggare cadute).
     static float distance_2d(const SVector* a, const SVector* b)
     {
         float dx = a->x - b->x;
         float dz = a->z - b->z;
         return std::sqrt(dx * dx + dz * dz);
     }
+
+    /// Euclidean 3D distance (range hack: include altezza per bloccare attacchi da quota).
+    static float distance_3d(const SVector* a, const SVector* b)
+    {
+        float dx = a->x - b->x;
+        float dy = a->y - b->y;
+        float dz = a->z - b->z;
+        return std::sqrt(dx * dx + dy * dy + dz * dz);
+    }
+
+    // Cap sul skillRange ricevuto dal client — impedisce che un client modificato
+    // mandi skillRange=9999 e bypassi il range check.
+    // 80 unità = massimo skill range legittimo del gioco (bow/mage long-range skills).
+    static constexpr int kMaxSkillRange = 80;
 
     /// Read the server-side position from a CUser (CObject.pos at offset 0xD0).
     static SVector* user_pos(CUser* user)
@@ -73,6 +89,25 @@ namespace etain_shield
         return reinterpret_cast<SVector*>(reinterpret_cast<char*>(mob) + 0x7C);
     }
 
+    // --- MovingGrace: tolleranza range extra quando il bersaglio si muove ---
+    // La pos server è in ritardo sul client durante il movimento → attacchi
+    // mid-movement falsano la distanza. Aggiungere rangeMovingGrace solo se il
+    // target si muove può SOLO ridurre i falsi positivi (è una leniency).
+
+    /// True se il mob sta inseguendo (in movimento).
+    static bool is_mob_moving(CMob* mob)
+    {
+        return mob->status == MobStatus::Chase;
+    }
+
+    /// True se l'utente bersaglio si è mosso di recente (~500ms).
+    static bool is_user_moving(CUser* target)
+    {
+        if (target->etainLastMoveTick == 0)
+            return false;
+        return (GetTickCount() - target->etainLastMoveTick) < 500;
+    }
+
     /// Send a position correction packet to a single client.
     static void send_pos_correction(CUser* user, const SVector& pos)
     {
@@ -83,6 +118,41 @@ namespace etain_shield
         pkt.y        = pos.y;
         pkt.z        = pos.z;
         NetworkHelper::Send(user, &pkt, sizeof(pkt));
+    }
+
+    // ===================================================================
+    //  kick_user — disconnessione reale della sessione
+    // ===================================================================
+    //
+    //  IMPORTANTE: settare user->closeBySession = 1 NON disconnette.
+    //  Verificato su ps_game.exe (Ghidra):
+    //    - closeBySession (CUser+0x5858) e' solo un GUARD: una volta != 0
+    //      l'utente viene SALTATO nei loop di send/process (0x414171,0x4143cc),
+    //      ma il socket resta aperto.
+    //    - La disconnessione vera la fa FUN_00414b20: incrementa closeBySession
+    //      e, SOLO se diventa == 1, chiama FUN_004ec760(this=CUser, reason, 0)
+    //      che fa closesocket(CUser+0x68).
+    //  => Pre-settare closeBySession = 1 e' DANNOSO: quando la close nativa
+    //     gira fa INC->2, CMP 2==1 falso e SALTA closesocket.
+    //
+    //  Qui replichiamo il corpo nativo di FUN_00414b20 usando il CUser* che
+    //  gia' possediamo (saltando il lookup per uid FUN_00415480), sotto la
+    //  stessa critical section del manager utenti (*0x587960 + 0xA0).
+    //  reason 0x67 = codice kick standard (casi 0x802/0x809 del dispatcher).
+    void kick_user(CUser* user)
+    {
+        if (!user)
+            return;
+
+        LPCRITICAL_SECTION cs =
+            reinterpret_cast<LPCRITICAL_SECTION>(*reinterpret_cast<uintptr_t*>(0x00587960) + 0xA0);
+        typedef void(__thiscall* CloseConn_t)(void* self, int reason, int zero);
+        auto CloseConn = reinterpret_cast<CloseConn_t>(0x004EC760);
+
+        EnterCriticalSection(cs);
+        if (++user->closeBySession == 1)   // closeBySession = int32 @0x5858
+            CloseConn(user, 0x67, 0);      // FUN_004ec760: closesocket(CUser+0x68)
+        LeaveCriticalSection(cs);
     }
 
     // ===================================================================
@@ -135,12 +205,159 @@ namespace etain_shield
     //  position.  Otherwise subsequent packets measure accumulated distance
     //  from a stale position, causing a cascading false-positive spiral.
 
+    // ===================================================================
+    //  AntiCutting — anti attack-move-cancel  (default LOG-ONLY)
+    // ===================================================================
+    //  lock_movement_for_attack() segna la finestra post-attacco
+    //  (etainCuttingUntil = now + cuttingLockMs), chiamata dai detour attacco.
+    //  In validate_movement, una 0x501 dentro la finestra viene:
+    //    - LogOnly=1 : LOGGATA (intervallo attacco->move) e LASCIATA passare
+    //    - LogOnly=0 : DROPPATA (enforce — player non si muove)
+    //  Log: C:\ShaiyaServer\Logs\EtainShield\anticutting-{data}.log
+
+    static std::mutex g_anticutLogMtx;
+
+    static void anticutting_log(CUser* user, uint32_t intervalMs)
+    {
+        SYSTEMTIME st;
+        GetLocalTime(&st);
+        CreateDirectoryA("C:\\ShaiyaServer\\Logs", nullptr);
+        CreateDirectoryA("C:\\ShaiyaServer\\Logs\\EtainShield", nullptr);
+
+        char path[MAX_PATH];
+        std::snprintf(path, sizeof(path),
+            "C:\\ShaiyaServer\\Logs\\EtainShield\\anticutting-%04d-%02d-%02d.log",
+            st.wYear, st.wMonth, st.wDay);
+
+        char line[256];
+        int len = std::snprintf(line, sizeof(line),
+            "[%02d:%02d:%02d] user=%-20s interval=%4ums lockMs=%u type=%-6s skillId=%d\r\n",
+            st.wHour, st.wMinute, st.wSecond,
+            user->username.data(), intervalMs, g_etainConfig.cuttingLockMs,
+            (user->etainCuttingSkillId >= 0) ? "Skill" : "Normal",
+            user->etainCuttingSkillId);
+        if (len <= 0) return;
+
+        {
+            std::lock_guard<std::mutex> lk(g_anticutLogMtx);
+            HANDLE h = CreateFileA(path, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                                   nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+            if (h != INVALID_HANDLE_VALUE)
+            {
+                DWORD written = 0;
+                WriteFile(h, line, static_cast<DWORD>(len), &written, nullptr);
+                CloseHandle(h);
+            }
+        }
+
+        // AntiCutting è ancora in test → resta SOLO nel suo file anticutting-{data}.log.
+        // Per attivarlo anche nell'aggregato GMSecurity (security_{data}.log) + DB
+        // SecurityEvents, decommentare il blocco sotto.
+        //char detail[128];
+        //std::snprintf(detail, sizeof(detail),
+        //    "interval=%ums lockMs=%u type=%s skillId=%d",
+        //    intervalMs, g_etainConfig.cuttingLockMs,
+        //    (user->etainCuttingSkillId >= 0) ? "Skill" : "Normal",
+        //    user->etainCuttingSkillId);
+        //security_logger::log("server", user->username.data(), "CUTTING", detail);
+    }
+
+    // Log EtainShield → cartella dedicata, un file per rilevazione (come AntiCutting):
+    //   C:\ShaiyaServer\Logs\EtainShield\{logName}-{data}.log
+    //   es. speedhack-2026-06-23.log, rangehack-2026-06-23.log
+    static std::mutex g_etainLogMtx;
+
+    static void etain_log(const char* logName, const char* event, CUser* user, const char* detail)
+    {
+        SYSTEMTIME st;
+        GetLocalTime(&st);
+        CreateDirectoryA("C:\\ShaiyaServer\\Logs", nullptr);
+        CreateDirectoryA("C:\\ShaiyaServer\\Logs\\EtainShield", nullptr);
+
+        char path[MAX_PATH];
+        std::snprintf(path, sizeof(path),
+            "C:\\ShaiyaServer\\Logs\\EtainShield\\%s-%04d-%02d-%02d.log",
+            logName, st.wYear, st.wMonth, st.wDay);
+
+        char line[384];
+        int len = std::snprintf(line, sizeof(line),
+            "[%02d:%02d:%02d] %-16s user=%-20s %s\r\n",
+            st.wHour, st.wMinute, st.wSecond,
+            event, user->username.data(), detail);
+        if (len <= 0) return;
+
+        std::lock_guard<std::mutex> lk(g_etainLogMtx);
+        HANDLE h = CreateFileA(path, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                               nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (h == INVALID_HANDLE_VALUE) return;
+        DWORD written = 0;
+        WriteFile(h, line, static_cast<DWORD>(len), &written, nullptr);
+        CloseHandle(h);
+    }
+
+    // skillId dell'attacco skill corrente. Offset verificati dal dispatch ps_game.exe
+    // (FUN_00478490): CUser+0xABC = numero skill, CUser+0xAC0 = array puntatori slot,
+    // skillObj+0x34 = SkillInfo*, SkillInfo+0x00 = skillId. -1 = normale/non risolto.
+    static int current_skill_id(CUser* user)
+    {
+        if (user->attackType != UserAttackType::Skill)
+            return -1;
+        char* base = reinterpret_cast<char*>(user);
+        int count = *reinterpret_cast<int*>(base + 0xABC);
+        int idx   = static_cast<int>(user->prevSkillUseIndex);
+        if (idx < 0 || idx >= count)
+            return -1;
+        void* skillObj = *reinterpret_cast<void**>(base + 0xAC0 + idx * 4);
+        if (!skillObj) return -1;
+        void* si = *reinterpret_cast<void**>(reinterpret_cast<char*>(skillObj) + 0x34);
+        if (!si) return -1;
+        return *reinterpret_cast<uint16_t*>(si);   // SkillInfo+0x00
+    }
+
+    // Chiamata dai detour attacco (0x457F50/0x458000) e dai handler 0x502/0x503.
+    // Segna la finestra + cattura lo skillId (per SkipSkillIds futuro + tuning log).
+    // Log-only: nessuna esenzione SkipSkillIds (registriamo tutto, incl. dash).
+    void lock_movement_for_attack(CUser* user)
+    {
+        if (!user || !g_etainConfig.enabled || !g_etainConfig.cuttingEnabled)
+            return;
+        user->etainCuttingSkillId = current_skill_id(user);
+        user->etainCuttingUntil   = GetTickCount() + g_etainConfig.cuttingLockMs;
+    }
+
     bool validate_movement(CUser* user, GameCharMoveIncoming* packet)
     {
         if (!g_etainConfig.enabled)
             return true;
 
         auto now = GetTickCount();
+
+        // --- AntiCutting (log-only / enforce) ---
+        // 0x501 arrivata dentro la finestra post-attacco.
+        if (g_etainConfig.cuttingEnabled && user->etainCuttingUntil != 0
+            && static_cast<int32_t>(now - user->etainCuttingUntil) < 0)
+        {
+            uint32_t intervalMs = g_etainConfig.cuttingLockMs
+                - static_cast<uint32_t>(user->etainCuttingUntil - now);
+            anticutting_log(user, intervalMs);
+
+            if (!g_etainConfig.cuttingLogOnly)
+            {
+                // Enforce: kick/ban opzionali, poi droppa la move e sync speed
+                // tracking per non falsare il check.
+                if (g_etainConfig.cuttingKickOnViolation)
+                    kick_user(user);
+                if (g_etainConfig.cuttingBanOnViolation)
+                {
+                    security_logger::ban_user((int)user->billingId, "AutoBan:CUTTING");
+                    kick_user(user);  // ban = rimuove anche la sessione live (come GMSecurity)
+                }
+                user->etainLastMoveTick = now;
+                return false;
+            }
+            // Log-only: logga solo la prima move post-attacco, poi consuma la finestra.
+            user->etainCuttingUntil = 0;
+        }
 
         // --- AntiSpeedHack ---
         if (!g_etainConfig.speedHackEnabled)
@@ -213,7 +430,27 @@ namespace etain_shield
         if (user->etainViolationCount < c.speedViolationThreshold)
             return true;
 
-        // Threshold reached: rubber-band correction.
+        // Soglia raggiunta: logga questo pacchetto in violazione.
+        char detail[128];
+        std::snprintf(detail, sizeof(detail),
+            "dist=%.2f max=%.2f elapsed=%ums viol=%d",
+            distance, maxDist, elapsed, (int)user->etainViolationCount);
+        etain_log("speedhack", "SPEED_HACK", user, detail);
+        security_logger::log("server", user->username.data(), "SPEED_HACK", detail);
+
+        // Log-only: osserva senza enforce — lascia passare la move (niente rubber-band).
+        if (c.speedLogOnly)
+            return true;
+
+        // Enforce: kick/ban opzionali + rubber-band.
+        if (c.speedKickOnViolation)
+            kick_user(user);
+        if (c.speedBanOnViolation)
+        {
+            security_logger::ban_user((int)user->billingId, "AutoBan:SPEED_HACK");
+            kick_user(user);  // ban = rimuove anche la sessione live (come GMSecurity)
+        }
+
         send_pos_correction(user, user->etainLastPos);
         return false;
     }
@@ -223,6 +460,8 @@ namespace etain_shield
         user->etainLastPos          = {};
         user->etainLastMoveTick     = 0;
         user->etainViolationCount   = 0;
+        user->etainCuttingUntil     = 0;
+        user->etainCuttingSkillId   = -1;
     }
 
     // ===================================================================
@@ -245,13 +484,16 @@ namespace etain_shield
         if (!user || !mob || !mob->info)
             return 0;
 
-        float dist = distance_2d(user_pos(user), mob_pos(mob));
+        if (skillRange > kMaxSkillRange) skillRange = kMaxSkillRange;
+
+        float dist = distance_3d(user_pos(user), mob_pos(mob));
 
         int range = user->abilityAttackRange;
         if (skillRange > range) range = skillRange;
 
+        int grace = is_mob_moving(mob) ? g_etainConfig.rangeMovingGrace : 0;
         float allowed = static_cast<float>(
-            range + static_cast<int>(mob->info->size) + g_etainConfig.rangeMargin);
+            range + static_cast<int>(mob->info->size) + g_etainConfig.rangeMargin + grace);
 
         return (dist <= allowed) ? 1 : 0;
     }
@@ -264,18 +506,23 @@ namespace etain_shield
         if (!attacker || !target)
             return 0;
 
-        float dist = distance_2d(user_pos(attacker), user_pos(target));
+        if (skillRange > kMaxSkillRange) skillRange = kMaxSkillRange;
+
+        float dist = distance_3d(user_pos(attacker), user_pos(target));
 
         int range = attacker->abilityAttackRange;
         if (skillRange > range) range = skillRange;
 
-        float allowed = static_cast<float>(range + 1 + g_etainConfig.rangeMargin);
+        int grace = is_user_moving(target) ? g_etainConfig.rangeMovingGrace : 0;
+        float allowed = static_cast<float>(range + 1 + g_etainConfig.rangeMargin + grace);
 
         return (dist <= allowed) ? 1 : 0;
     }
 
     int validate_attack_user(CUser* user, GameCharAttackUserIncoming* packet)
     {
+        lock_movement_for_attack(user);  // AntiCutting: finestra su attacco base 0x502
+
         if (!g_etainConfig.enabled || !g_etainConfig.rangeHackEnabled)
             return 1;
 
@@ -286,15 +533,35 @@ namespace etain_shield
         if (!target)
             return 1;
 
-        float dist = distance_2d(user_pos(user), user_pos(target));
+        float dist = distance_3d(user_pos(user), user_pos(target));
+        int grace = is_user_moving(target) ? g_etainConfig.rangeMovingGrace : 0;
         float allowed = static_cast<float>(
-            user->abilityAttackRange + 1 + g_etainConfig.rangeMargin);
+            user->abilityAttackRange + 1 + g_etainConfig.rangeMargin + grace);
 
-        return (dist <= allowed) ? 1 : 0;
+        if (dist <= allowed) return 1;
+
+        char detail[128];
+        std::snprintf(detail, sizeof(detail),
+            "dist=%.2f allowed=%.2f target=%u",
+            dist, allowed, packet->targetId);
+        etain_log("rangehack", "RANGE_HACK_PVP", user, detail);
+        security_logger::log("server", user->username.data(), "RANGE_HACK_PVP", detail);
+        if (g_etainConfig.rangeLogOnly)
+            return 1;   // osserva: logga e lascia passare l'attacco
+        if (g_etainConfig.rangeKickOnViolation)
+            kick_user(user);
+        if (g_etainConfig.rangeBanOnViolation)
+        {
+            security_logger::ban_user((int)user->billingId, "AutoBan:RANGE_HACK_PVP");
+            kick_user(user);  // ban = rimuove anche la sessione live (come GMSecurity)
+        }
+        return 0;
     }
 
     int validate_attack_mob(CUser* user, GameCharAttackMobIncoming* packet)
     {
+        lock_movement_for_attack(user);  // AntiCutting: finestra su attacco base 0x503
+
         if (!g_etainConfig.enabled || !g_etainConfig.rangeHackEnabled)
             return 1;
 
@@ -305,12 +572,42 @@ namespace etain_shield
         if (!mob || !mob->info)
             return 1;
 
-        float dist = distance_2d(user_pos(user), mob_pos(mob));
+        float dist = distance_3d(user_pos(user), mob_pos(mob));
+        int grace = is_mob_moving(mob) ? g_etainConfig.rangeMovingGrace : 0;
         float allowed = static_cast<float>(
             user->abilityAttackRange + static_cast<int>(mob->info->size) +
-            g_etainConfig.rangeMargin);
+            g_etainConfig.rangeMargin + grace);
 
-        return (dist <= allowed) ? 1 : 0;
+        if (dist <= allowed) return 1;
+
+        char detail[128];
+        std::snprintf(detail, sizeof(detail),
+            "dist=%.2f allowed=%.2f mob=%u",
+            dist, allowed, packet->targetId);
+        etain_log("rangehack", "RANGE_HACK_PVE", user, detail);
+        security_logger::log("server", user->username.data(), "RANGE_HACK_PVE", detail);
+        if (g_etainConfig.rangeLogOnly)
+            return 1;   // osserva: logga e lascia passare l'attacco
+        if (g_etainConfig.rangeKickOnViolation)
+            kick_user(user);
+        if (g_etainConfig.rangeBanOnViolation)
+        {
+            security_logger::ban_user((int)user->billingId, "AutoBan:RANGE_HACK_PVE");
+            kick_user(user);  // ban = rimuove anche la sessione live (come GMSecurity)
+        }
+        return 0;
+    }
+
+    // AntiDupe: true se l'item slot è bound e il toggle [AntiDupe] BlockBoundItems è attivo.
+    // item+0x30 = ItemInfo*; ItemInfo+0x31 = reqOg (0=Tradable, 1=AccountBound, 2=CharacterBound).
+    // >=1 → blocca (account/character bound). Null-guard completo.
+    bool block_bound_item(void* item)
+    {
+        if (!g_etainConfig.blockBoundItems) return false;
+        if (!item) return false;
+        void* info = *reinterpret_cast<void**>(reinterpret_cast<char*>(item) + 0x30);
+        if (!info) return false;
+        return *reinterpret_cast<uint8_t*>(reinterpret_cast<char*>(info) + 0x31) >= 1;
     }
 }
 
@@ -361,6 +658,13 @@ void __declspec(naked) naked_0x458000()
         popad
         jz blocked
 
+        // AntiCutting: segna finestra post-attacco (ebx = user)
+        pushad
+        push ebx
+        call etain_shield::lock_movement_for_attack
+        add esp,0x4
+        popad
+
         sub esp,0x10
         push ebp
         mov ebp,[esp+0x18]
@@ -390,6 +694,13 @@ void __declspec(naked) naked_0x457F50()
         test eax,eax
         popad
         jz blocked
+
+        // AntiCutting: segna finestra post-attacco (edi = attacker)
+        pushad
+        push edi
+        call etain_shield::lock_movement_for_attack
+        add esp,0x4
+        popad
 
         sub esp,0x18
         mov eax,[edi+0x12F0]

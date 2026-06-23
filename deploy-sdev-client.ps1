@@ -1,13 +1,16 @@
-# Deploy sdev-client.dll → server Files/ + aggiorna manifest.json
+# Deploy sdev-client.dll -> server Files/
+# (Il manifest NON va aggiornato a mano: htdocs/Updater/manifest.php lo rigenera
+#  dinamicamente da Files/ con cache mtime; il client lo riceve via rewrite
+#  manifest.json -> manifest.php. Caricare la DLL in Files/ basta.)
 #
 # Uso manuale:   .\deploy-sdev-client.ps1
 # Post-build VS: .\deploy-sdev-client.ps1 -DllPath "$(TargetPath)" -SkipBuild
 #
-# In Visual Studio 2022 → sdev-client Properties → Build Events → Post-Build Event:
+# In Visual Studio 2022 -> sdev-client Properties -> Build Events -> Post-Build Event:
 #   powershell.exe -ExecutionPolicy Bypass -NonInteractive -File "$(SolutionDir)deploy-sdev-client.ps1" -DllPath "$(TargetPath)" -SkipBuild
 
 param(
-    [string]$DllPath   = "",      # percorso DLL già compilata (usato da VS post-build)
+    [string]$DllPath   = "",      # percorso DLL gia compilata (usato da VS post-build)
     [switch]$SkipBuild            # non fare MSBuild (usato da VS post-build)
 )
 
@@ -44,9 +47,8 @@ Write-Host "[INFO] DLL: $([System.IO.Path]::GetFileName($DllPath))  SHA256=$sha2
 # ---------------------------------------------------------------------------
 # 3. Upload DLL sul server (Files/sdev.dll)
 # ---------------------------------------------------------------------------
-Write-Host "`n[UPLOAD] Invio sdev.dll → ${sshHost}:$serverFilesPath ..." -ForegroundColor Cyan
+Write-Host "`n[UPLOAD] Invio sdev.dll -> ${sshHost}:$serverFilesPath ..." -ForegroundColor Cyan
 
-# Assicura che la cartella Files esista sul server
 $sshExe = (Get-Command ssh -ErrorAction SilentlyContinue)
 $scpExe = (Get-Command scp -ErrorAction SilentlyContinue)
 
@@ -66,5 +68,15 @@ if (Test-Path $localClientDir) {
     Copy-Item $DllPath "$localClientDir\sdev.dll" -Force
     Write-Host "[OK] sdev.dll copiato in client locale: $localClientDir" -ForegroundColor Green
 }
+
+# ---------------------------------------------------------------------------
+# 5. Manifest: nessuna azione manuale.
+#    htdocs/Updater/manifest.php rigenera files[]/patches[] da Files/ + Patches/
+#    (SHA256 con cache mtime in .hashes/). Il rewrite .htaccess serve manifest.php
+#    quando il client chiede manifest.json, e launcher.php inietta il ManifestSha256
+#    coerente. Caricare sdev.dll in Files/ (step 3) e' sufficiente: l'hash si
+#    aggiorna da solo perche' cambia l'mtime del file.
+# ---------------------------------------------------------------------------
+Write-Host "[MANIFEST] Auto-generato da manifest.php (nessun update manuale necessario)." -ForegroundColor DarkGray
 
 Write-Host "`n[DONE] sdev-client deploy completato.`n" -ForegroundColor Green

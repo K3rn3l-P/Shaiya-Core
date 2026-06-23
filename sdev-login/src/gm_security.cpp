@@ -1,8 +1,11 @@
 #include "include/gm_security.h"
+#include "include/login_logger.h"
 
 #include <array>
 #include <cstring>
 #include <cstdio>
+#include <mutex>
+#include <string>
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <bcrypt.h>
@@ -521,21 +524,49 @@ namespace gm_security
         return false;
     }
 
-    bool verify_sah_token(const uint8_t* client_token)
+    bool verify_sah_token(const uint8_t* client_token, const char* ip)
     {
         if (!client_token)
             return false;
+
+        // Logga sempre il valore ricevuto — utile dopo ogni rebuild per aggiornare GameHashHex.
+        char receivedHex[17] = {};
+        for (int i = 0; i < 8; ++i)
+            std::snprintf(receivedHex + i * 2, 3, "%02x", client_token[i]);
+        char hashLogMsg[40] = {};
+        std::snprintf(hashLogMsg, sizeof(hashLogMsg), "GAME_HASH_RECEIVED=%s", receivedHex);
+        login_logger::log_fail(ip ? ip : "?", "-", hashLogMsg);
+
         const uint8_t* expected = get_expected_sah_token();
         if (!expected)
-            return true;  // SahTokenHex non configurato → fail-open (rollout graduale)
-        return secure_mem_eq(client_token, expected, 8);
+        {
+            security_logger::log(ip ? ip : "?", "-", "SAH_CONFIG_MISSING",
+                "GameHashHex non configurato in GMSecurity.ini — nega accesso");
+            return false;  // fail-closed: nessun hash configurato → nega sempre
+        }
+
+        if (!secure_mem_eq(client_token, expected, 8))
+        {
+            char expectedHex[17] = {};
+            for (int i = 0; i < 8; ++i)
+                std::snprintf(expectedHex + i * 2, 3, "%02x", expected[i]);
+            char msg[64];
+            std::snprintf(msg, sizeof(msg), "expected=%s got=%s", expectedHex, receivedHex);
+            security_logger::log(ip ? ip : "?", "-", "GAME_HASH_MISMATCH", msg);
+            return false;
+        }
+        return true;
     }
 
     uint32_t get_client_auth_token()
     {
         const char* secret = get_client_secret();
         if (!secret || !secret[0])
-            return 0;  // nessun segreto = XOR con 0 = passthrough (fail-open)
+            return 0;  // Nessun segreto = XOR con 0 (IP server inviato in chiaro).
+                       // NON è un buco di auth: questo token offusca solo l'IP nella
+                       // select-server (post-login). Il gate vero è verify_rsa_client_token
+                       // (0xA101), già fail-closed: senza ClientSecret nessun client
+                       // autentica → questo ramo è di fatto irraggiungibile.
 
         FILETIME ft;
         GetSystemTimeAsFileTime(&ft);
@@ -574,5 +605,442 @@ namespace gm_security
              | (static_cast<uint32_t>(hash[1]) << 8)
              | (static_cast<uint32_t>(hash[2]) << 16)
              | (static_cast<uint32_t>(hash[3]) << 24);
+    }
+}
+
+// ===========================================================================
+// security_logger — log file + DB (SecurityEvents in PS_UserData)
+// ===========================================================================
+namespace security_logger
+{
+    namespace
+    {
+        static std::mutex g_mtx;
+        static constexpr const char* kLogDir = "C:\\ShaiyaServer\\Logs";
+
+        // ODBC lazy connection a PS_UserData via Windows Auth locale
+        static SQLHENV g_hEnv     = SQL_NULL_HENV;
+        static SQLHDBC g_hDbc     = SQL_NULL_HDBC;
+        static bool    g_db_ok    = false;
+        static bool    g_db_tried = false;
+
+        static void db_init_unlocked()
+        {
+            if (g_db_tried) return;
+            g_db_tried = true;
+
+            if (SQLAllocHandle(SQL_HANDLE_ENV, SQL_NULL_HANDLE, &g_hEnv) != SQL_SUCCESS)
+                return;
+            SQLSetEnvAttr(g_hEnv, SQL_ATTR_ODBC_VERSION, (SQLPOINTER)SQL_OV_ODBC3, 0);
+            if (SQLAllocHandle(SQL_HANDLE_DBC, g_hEnv, &g_hDbc) != SQL_SUCCESS)
+                return;
+            SQLSetConnectAttr(g_hDbc, SQL_ATTR_LOGIN_TIMEOUT, (SQLPOINTER)3, 0);
+
+            // Credenziali da variabili d'ambiente di sistema — mai hardcoded né in INI.
+            // Fail-safe: se mancano, DB logging disabilitato (il file log resta attivo).
+            char user[128]{}, pwd[256]{};
+            DWORD un = GetEnvironmentVariableA("SHAIYA_LOGDB_USER", user, sizeof(user));
+            DWORD pn = GetEnvironmentVariableA("SHAIYA_LOGDB_PWD",  pwd,  sizeof(pwd));
+            if (un == 0 || un >= sizeof(user) || pn == 0 || pn >= sizeof(pwd))
+                return;
+
+            char connIn[512]{};
+            std::snprintf(connIn, sizeof(connIn),
+                "Driver={ODBC Driver 17 for SQL Server};"
+                "Server=127.0.0.1;Database=PS_UserData;Uid=%s;Pwd=%s;",
+                user, pwd);
+            SQLSMALLINT outLen = 0;
+            RETCODE rc = SQLDriverConnectA(g_hDbc, nullptr, (SQLCHAR*)connIn, SQL_NTS,
+                                           nullptr, 0, &outLen, SQL_DRIVER_NOPROMPT);
+            g_db_ok = (rc == SQL_SUCCESS || rc == SQL_SUCCESS_WITH_INFO);
+            SecureZeroMemory(connIn, sizeof(connIn));
+            SecureZeroMemory(pwd,    sizeof(pwd));
+        }
+
+        static void write_db_unlocked(const char* ip, const char* username,
+                                       const char* event_type, const char* detail)
+        {
+            db_init_unlocked();
+            if (!g_db_ok) return;
+
+            SQLHSTMT hStmt = SQL_NULL_HSTMT;
+            if (SQLAllocHandle(SQL_HANDLE_STMT, g_hDbc, &hStmt) != SQL_SUCCESS)
+                return;
+
+            static const SQLCHAR kSql[] =
+                "INSERT INTO [dbo].[SecurityEvents] (Username,IP,EventType,Detail)"
+                " VALUES (?,?,?,?)";
+            if (SQLPrepareA(hStmt, (SQLCHAR*)kSql, SQL_NTS) == SQL_SUCCESS)
+            {
+                SQLLEN cbU = SQL_NTS, cbI = SQL_NTS, cbE = SQL_NTS, cbD = SQL_NTS;
+                SQLBindParameter(hStmt, 1, SQL_PARAM_INPUT, SQL_C_CHAR, SQL_VARCHAR,
+                                 64,  0, (SQLPOINTER)username,   0, &cbU);
+                SQLBindParameter(hStmt, 2, SQL_PARAM_INPUT, SQL_C_CHAR, SQL_VARCHAR,
+                                 45,  0, (SQLPOINTER)ip,         0, &cbI);
+                SQLBindParameter(hStmt, 3, SQL_PARAM_INPUT, SQL_C_CHAR, SQL_VARCHAR,
+                                 32,  0, (SQLPOINTER)event_type, 0, &cbE);
+                SQLBindParameter(hStmt, 4, SQL_PARAM_INPUT, SQL_C_CHAR, SQL_VARCHAR,
+                                 256, 0, (SQLPOINTER)detail,     0, &cbD);
+                SQLExecute(hStmt);
+            }
+            SQLFreeHandle(SQL_HANDLE_STMT, hStmt);
+        }
+
+        static void write_file_unlocked(const char* ip, const char* username,
+                                         const char* event_type, const char* detail)
+        {
+            SYSTEMTIME st;
+            GetLocalTime(&st);
+            CreateDirectoryA(kLogDir, nullptr);
+            char path[MAX_PATH];
+            std::snprintf(path, sizeof(path), "%s\\security_%04d-%02d-%02d.log",
+                          kLogDir, st.wYear, st.wMonth, st.wDay);
+            char line[512];
+            int len = std::snprintf(line, sizeof(line),
+                "[%02d:%02d:%02d] %-24s | ip=%-15s | user=%-20s | %s\r\n",
+                st.wHour, st.wMinute, st.wSecond,
+                event_type ? event_type : "",
+                ip ? ip : "?",
+                username ? username : "-",
+                detail ? detail : "");
+            if (len <= 0) return;
+            HANDLE hFile = CreateFileA(path, GENERIC_WRITE, FILE_SHARE_READ,
+                                        nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+            if (hFile == INVALID_HANDLE_VALUE) return;
+            SetFilePointer(hFile, 0, nullptr, FILE_END);
+            DWORD written = 0;
+            WriteFile(hFile, line, static_cast<DWORD>(len), &written, nullptr);
+            CloseHandle(hFile);
+        }
+    }
+
+    bool is_hwid_blocked(const char* hwid)
+    {
+        if (!hwid || !hwid[0]) return false;
+        char safeHwid[33] = {};
+        strncpy_s(safeHwid, sizeof(safeHwid), hwid, 32);
+
+        std::lock_guard<std::mutex> lk(g_mtx);
+        db_init_unlocked();
+        if (!g_db_ok) return false;  // fail-open: il check autoritativo resta a login (verify_hwid)
+
+        SQLHSTMT hStmt = SQL_NULL_HSTMT;
+        if (SQLAllocHandle(SQL_HANDLE_STMT, g_hDbc, &hStmt) != SQL_SUCCESS)
+            return false;
+
+        bool blocked = false;
+        static const SQLCHAR kSql[] =
+            "SELECT TOP 1 1 FROM [PS_UserData].[dbo].[BlockedHWID]"
+            " WHERE Hwid=? AND (ExpiresAt IS NULL OR ExpiresAt > GETDATE())";
+        if (SQLPrepareA(hStmt, (SQLCHAR*)kSql, SQL_NTS) == SQL_SUCCESS)
+        {
+            SQLLEN cb = SQL_NTS;
+            SQLBindParameter(hStmt, 1, SQL_PARAM_INPUT, SQL_C_CHAR, SQL_VARCHAR,
+                             32, 0, safeHwid, sizeof(safeHwid), &cb);
+            if (SQLExecute(hStmt) == SQL_SUCCESS)
+            {
+                SQLRETURN rc = SQLFetch(hStmt);
+                blocked = (rc == SQL_SUCCESS || rc == SQL_SUCCESS_WITH_INFO);
+            }
+        }
+        SQLFreeHandle(SQL_HANDLE_STMT, hStmt);
+        return blocked;
+    }
+
+    void log(const char* ip, const char* username,
+             const char* event_type, const char* detail)
+    {
+        std::lock_guard<std::mutex> lk(g_mtx);
+        write_file_unlocked(ip, username, event_type, detail);
+        write_db_unlocked(ip, username, event_type, detail);
+    }
+}
+
+// ===========================================================================
+// gm_security::verify_hwid_sig / verify_hwid
+//
+// verify_hwid_sig: verifica HMAC-SHA256(hwid, HwidSigKey) contro la sig ricevuta.
+//   La chiave NON è nel client — è letta da GMSecurity.ini [HWID] HwidSigKey (hex).
+//   Ritorna false se chiave non configurata, sig vuota, lunghezza errata, o digest diverso.
+//
+// verify_hwid: verifica HWID + sig + BlockedHWID contro il DB.
+//   Prima connessione (LastHWID NULL): salva e passa (fail-open).
+//   HWID cambiato: logga HWID_MISMATCH.
+// ===========================================================================
+namespace gm_security
+{
+    // Verifica HMAC-SHA256(hwid, key) dove key è letta da GMSecurity.ini [HWID] HwidSigKey.
+    static bool verify_hwid_sig(const char* hwid, const char* sig)
+    {
+        if (!hwid || !hwid[0] || !sig || !sig[0]) return false;
+
+        char hexKey[65] = {};
+        GetPrivateProfileStringA("HWID", "HwidSigKey", "", hexKey, sizeof(hexKey), get_ini_path());
+        if (!hexKey[0] || strlen(hexKey) != 64) return false;
+
+        BYTE key[32] = {};
+        for (int i = 0; i < 32; ++i)
+        {
+            char byteStr[3] = { hexKey[i * 2], hexKey[i * 2 + 1], '\0' };
+            key[i] = static_cast<BYTE>(std::strtoul(byteStr, nullptr, 16));
+        }
+
+        BCRYPT_ALG_HANDLE  hAlg  = nullptr;
+        BCRYPT_HASH_HANDLE hHash = nullptr;
+        BYTE hash[32] = {};
+        bool ok = false;
+
+        if (BCryptOpenAlgorithmProvider(&hAlg, BCRYPT_SHA256_ALGORITHM, nullptr,
+                                        BCRYPT_ALG_HANDLE_HMAC_FLAG) == 0)
+        {
+            if (BCryptCreateHash(hAlg, &hHash, nullptr, 0, key, sizeof(key), 0) == 0)
+            {
+                ULONG hlen = static_cast<ULONG>(std::strlen(hwid));
+                BCryptHashData(hHash, reinterpret_cast<PBYTE>(const_cast<char*>(hwid)), hlen, 0);
+                ok = (BCryptFinishHash(hHash, hash, 32, 0) == 0);
+            }
+            if (hHash) BCryptDestroyHash(hHash);
+            BCryptCloseAlgorithmProvider(hAlg, 0);
+        }
+        SecureZeroMemory(key, sizeof(key));
+        if (!ok) return false;
+
+        char expected[65] = {};
+        for (int i = 0; i < 32; ++i)
+            std::snprintf(expected + i * 2, 3, "%02x", static_cast<unsigned>(hash[i]));
+
+        bool match = (std::strlen(sig) == 64) && secure_mem_eq(sig, expected, 64);
+        SecureZeroMemory(hash, sizeof(hash));
+        SecureZeroMemory(expected, sizeof(expected));
+        return match;
+    }
+
+    bool verify_hwid(shaiya::SDatabase* db, const char* username,
+                     const char* hwid, const char* sig, const char* ip)
+    {
+        if (!db || !username || !username[0]) return true;
+
+        // HWID vuoto = client ha bypassato l'updater (device.id assente o sig tamperata)
+        bool hwid_present = (hwid && hwid[0]);
+        if (!hwid_present)
+        {
+            security_logger::log(ip, username, "HWID_MISSING",
+                "client non ha inviato HWID (bypass updater?)");
+
+            // Bypass fix: cancellare device.id.sig → sdev-client invia HWID vuoto →
+            // BlockedHWID saltato. Leggiamo LastHWID dal DB per l'account e verifichiamo.
+            char safeUser2[kMaxUsernameLen + 1] = {};
+            strncpy_s(safeUser2, username, kMaxUsernameLen);
+            char storedHwid2[33] = {};
+            bool hasStored2 = false;
+            {
+                SQLHSTMT hStmt = SQL_NULL_HSTMT;
+                if (SQLAllocHandle(SQL_HANDLE_STMT, db->dbc, &hStmt) == SQL_SUCCESS)
+                {
+                    const char* sel =
+                        "SELECT TOP 1 CAST(LastHWID AS VARCHAR(33))"
+                        " FROM [PS_UserData].[dbo].[Members] WHERE UserID=?";
+                    if (SQLPrepareA(hStmt, (SQLCHAR*)sel, SQL_NTS) == SQL_SUCCESS)
+                    {
+                        SQLLEN cbU = SQL_NTS;
+                        SQLBindParameter(hStmt, 1, SQL_PARAM_INPUT, SQL_C_CHAR, SQL_VARCHAR,
+                                         kMaxUsernameLen, 0, safeUser2, kMaxUsernameLen + 1, &cbU);
+                        if (SQLExecute(hStmt) == SQL_SUCCESS)
+                        {
+                            SQLRETURN rc = SQLFetch(hStmt);
+                            if (rc == SQL_SUCCESS || rc == SQL_SUCCESS_WITH_INFO)
+                            {
+                                SQLLEN ind = 0;
+                                SQLGetData(hStmt, 1, SQL_C_CHAR, storedHwid2, sizeof(storedHwid2), &ind);
+                                hasStored2 = (ind != SQL_NULL_DATA && storedHwid2[0] != '\0');
+                            }
+                        }
+                    }
+                    SQLFreeHandle(SQL_HANDLE_STMT, hStmt);
+                }
+            }
+            if (hasStored2)
+            {
+                SQLHSTMT hStmt = SQL_NULL_HSTMT;
+                bool blocked2 = false;
+                if (SQLAllocHandle(SQL_HANDLE_STMT, db->dbc, &hStmt) == SQL_SUCCESS)
+                {
+                    const char* sql =
+                        "SELECT TOP 1 1 FROM [PS_UserData].[dbo].[BlockedHWID]"
+                        " WHERE Hwid=? AND (ExpiresAt IS NULL OR ExpiresAt > GETDATE())";
+                    if (SQLPrepareA(hStmt, (SQLCHAR*)sql, SQL_NTS) == SQL_SUCCESS)
+                    {
+                        SQLLEN cbH = SQL_NTS;
+                        SQLBindParameter(hStmt, 1, SQL_PARAM_INPUT, SQL_C_CHAR, SQL_VARCHAR,
+                                         32, 0, storedHwid2, 33, &cbH);
+                        if (SQLExecute(hStmt) == SQL_SUCCESS)
+                        {
+                            SQLRETURN rc = SQLFetch(hStmt);
+                            blocked2 = (rc == SQL_SUCCESS || rc == SQL_SUCCESS_WITH_INFO);
+                        }
+                    }
+                    SQLFreeHandle(SQL_HANDLE_STMT, hStmt);
+                }
+                if (blocked2)
+                {
+                    security_logger::log(ip, username, "HWID_BLOCKED", storedHwid2);
+                    return false;
+                }
+            }
+
+            // EnforceKick=1 → HWID mancante = bypass updater → disconnect
+            // EnforceKick=0 → fail-open (modalità transizione, vecchi client senza sig)
+            if (GetPrivateProfileIntA("HWID", "EnforceKick", 0, get_ini_path()))
+                return false;
+
+            return true;
+        }
+
+        // Sanitizza HWID — max 32 char, stessa lunghezza device.id
+        char safeHwid[33] = {};
+        strncpy_s(safeHwid, sizeof(safeHwid), hwid, 32);
+        safeHwid[32] = '\0';
+
+        char safeUser[kMaxUsernameLen + 1] = {};
+        strncpy_s(safeUser, username, kMaxUsernameLen);
+
+        // -----------------------------------------------------------------
+        // Check BlockedHWID — blocca anche account fasullo con stesso hardware.
+        // Priorità massima: check prima di qualsiasi altra logica HWID.
+        // -----------------------------------------------------------------
+        {
+            SQLHSTMT hStmt = SQL_NULL_HSTMT;
+            bool hwid_blocked = false;
+            if (SQLAllocHandle(SQL_HANDLE_STMT, db->dbc, &hStmt) == SQL_SUCCESS)
+            {
+                const char* sql =
+                    "SELECT TOP 1 1 FROM [PS_UserData].[dbo].[BlockedHWID]"
+                    " WHERE Hwid=? AND (ExpiresAt IS NULL OR ExpiresAt > GETDATE())";
+                if (SQLPrepareA(hStmt, (SQLCHAR*)sql, SQL_NTS) == SQL_SUCCESS)
+                {
+                    SQLLEN cbHwid = SQL_NTS;
+                    SQLBindParameter(hStmt, 1, SQL_PARAM_INPUT, SQL_C_CHAR, SQL_VARCHAR,
+                                     32, 0, safeHwid, 33, &cbHwid);
+                    if (SQLExecute(hStmt) == SQL_SUCCESS)
+                    {
+                        SQLRETURN rc = SQLFetch(hStmt);
+                        hwid_blocked = (rc == SQL_SUCCESS || rc == SQL_SUCCESS_WITH_INFO);
+                    }
+                }
+                SQLFreeHandle(SQL_HANDLE_STMT, hStmt);
+            }
+            if (hwid_blocked)
+            {
+                security_logger::log(ip, username, "HWID_BLOCKED", safeHwid);
+                return false; // caller disconnette
+            }
+        }
+
+        // -----------------------------------------------------------------
+        // Verifica firma HMAC-SHA256(hwid, HwidSigKey) se chiave configurata.
+        // Chiave in GMSecurity.ini [HWID] HwidSigKey — mai nel client.
+        // -----------------------------------------------------------------
+        {
+            char sigKeyCheck[2] = {};
+            GetPrivateProfileStringA("HWID", "HwidSigKey", "", sigKeyCheck,
+                                     sizeof(sigKeyCheck), get_ini_path());
+            if (sigKeyCheck[0] != '\0')
+            {
+                bool sig_present = (sig && sig[0]);
+                if (!sig_present)
+                {
+                    // HWID presente ma sig assente → sdev-client modificato
+                    security_logger::log(ip, username, "HWID_SIG_ABSENT", safeHwid);
+                    return false;
+                }
+                if (!verify_hwid_sig(safeHwid, sig))
+                {
+                    security_logger::log(ip, username, "HWID_SIG_INVALID", safeHwid);
+                    return false;
+                }
+            }
+        }
+
+        // Leggi HWID precedente con ODBC diretto (no SDatabase per evitare il bug cursor)
+        char storedHwid[33] = {};
+        bool isFirstTime = true;
+        {
+            SQLHSTMT hStmt = SQL_NULL_HSTMT;
+            if (SQLAllocHandle(SQL_HANDLE_STMT, db->dbc, &hStmt) == SQL_SUCCESS)
+            {
+                // CAST→VARCHAR evita troncamento a 31 char del driver ODBC su NVARCHAR(32)
+                const char* sel = "SELECT TOP 1 CAST(LastHWID AS VARCHAR(33)) FROM [PS_UserData].[dbo].[Members] WHERE UserID=?";
+                if (SQLPrepareA(hStmt, (SQLCHAR*)sel, SQL_NTS) == SQL_SUCCESS)
+                {
+                    SQLLEN cbUser = SQL_NTS;
+                    SQLBindParameter(hStmt, 1, SQL_PARAM_INPUT, SQL_C_CHAR, SQL_VARCHAR,
+                                     kMaxUsernameLen, 0, safeUser, kMaxUsernameLen+1, &cbUser);
+                    if (SQLExecute(hStmt) == SQL_SUCCESS)
+                    {
+                        SQLLEN ind = 0;
+                        SQLRETURN rc = SQLFetch(hStmt);
+                        if (rc == SQL_SUCCESS || rc == SQL_SUCCESS_WITH_INFO)
+                        {
+                            SQLGetData(hStmt, 1, SQL_C_CHAR, storedHwid, sizeof(storedHwid), &ind);
+                            isFirstTime = (ind == SQL_NULL_DATA || storedHwid[0] == '\0');
+                        }
+                    }
+                }
+                SQLFreeHandle(SQL_HANDLE_STMT, hStmt);
+            }
+        }
+
+        // Upsert Members: INSERT prima volta, UPDATE altrimenti
+        {
+            SQLHSTMT hStmt = SQL_NULL_HSTMT;
+            if (SQLAllocHandle(SQL_HANDLE_STMT, db->dbc, &hStmt) == SQL_SUCCESS)
+            {
+                const char* upsert = isFirstTime
+                    ? "INSERT INTO [PS_UserData].[dbo].[Members] (UserID,LastHWID,LastHWIDTime) VALUES (?,?,GETDATE())"
+                    : "UPDATE [PS_UserData].[dbo].[Members] SET LastHWID=?,LastHWIDTime=GETDATE() WHERE UserID=?";
+
+                if (SQLPrepareA(hStmt, (SQLCHAR*)upsert, SQL_NTS) == SQL_SUCCESS)
+                {
+                    SQLLEN cbUser = SQL_NTS, cbHwid = SQL_NTS;
+                    if (isFirstTime)
+                    {
+                        SQLBindParameter(hStmt, 1, SQL_PARAM_INPUT, SQL_C_CHAR, SQL_VARCHAR,
+                                         kMaxUsernameLen, 0, safeUser, kMaxUsernameLen+1, &cbUser);
+                        SQLBindParameter(hStmt, 2, SQL_PARAM_INPUT, SQL_C_CHAR, SQL_VARCHAR,
+                                         32, 0, safeHwid, 33, &cbHwid);
+                    }
+                    else
+                    {
+                        SQLBindParameter(hStmt, 1, SQL_PARAM_INPUT, SQL_C_CHAR, SQL_VARCHAR,
+                                         32, 0, safeHwid, 33, &cbHwid);
+                        SQLBindParameter(hStmt, 2, SQL_PARAM_INPUT, SQL_C_CHAR, SQL_VARCHAR,
+                                         kMaxUsernameLen, 0, safeUser, kMaxUsernameLen+1, &cbUser);
+                    }
+                    SQLExecute(hStmt);
+                }
+                SQLFreeHandle(SQL_HANDLE_STMT, hStmt);
+            }
+        }
+
+        if (isFirstTime)
+        {
+            security_logger::log(ip, username, "HWID_REGISTERED", safeHwid);
+            return true;
+        }
+
+        // HWID già registrato: confronto
+        if (std::strcmp(storedHwid, safeHwid) != 0)
+        {
+            char detail[128];
+            std::snprintf(detail, sizeof(detail),
+                "stored=%.32s new=%.32s", storedHwid, safeHwid);
+            security_logger::log(ip, username, "HWID_MISMATCH", detail);
+
+            // EnforceKick=1 in GMSecurity.ini → disconnette il client
+            if (GetPrivateProfileIntA("HWID", "EnforceKick", 0, get_ini_path()))
+                return false;
+        }
+
+        return true;
     }
 }

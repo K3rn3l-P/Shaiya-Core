@@ -132,6 +132,9 @@
     <ClCompile Include="src\interface.cpp" />
     <ClCompile Include="src\game_data_archive.cpp" />
     <ClCompile Include="src\sah_decrypt.cpp" />
+    <ClCompile Include="src\hwid.cpp" />
+    <ClCompile Include="src\anti_tamper.cpp" />
+    <ClCompile Include="src\sec_token.cpp" />
     <ClCompile Include="src\imgui_layer.cpp" />
     <ClCompile Include="src\imgui_layer_asm.cpp" />
     <ClCompile Include="src\imgui_layer_emoji.cpp" />

@@ -1,7 +1,38 @@
+# ⚠️ SICUREZZA — REGOLA ASSOLUTA (LEGGERE PRIMA DI TUTTO)
+
+**Gioco multiplayer mondiale → mindset produzione sempre, anche in fase di test.**
+
+## Client = UNTRUSTED. Nessun segreto nel client.
+
+| Componente | Rischio |
+|---|---|
+| `sdev-client.dll` | Ispezionabile con Ghidra in minuti |
+| `Updater.exe` (.NET 4.8) | Decompilabile con ILSpy/dnSpy, codice originale visibile |
+
+**Pattern obbligatorio:** client invia dati grezzi → server valida/firma → server risponde.
+Chiavi solo in `GMSecurity.ini` (server). Mai hardcoded in `.cpp`, `.h`, `.cs` del client.
+
+Fail-closed su config mancante: se la chiave non è configurata → nega accesso (non accetta tutto).
+
+Vedi infrastruttura completa e percorsi: `C:\Users\lol\source\repo\CLAUDE.md`
+
+---
+
 # Istruzioni — Shaiya-Core
 
 DLL client iniettata in `game.exe` (x86 32-bit, MSVC). Aggiunge hook, overlay ImGui,
 pannelli debug e funzionalità custom al client Shaiya EP6.
+
+---
+
+## Riferimenti Shaiya — Documentazione Pacchetti
+
+**openshaiya.org/docs/packets.html** — struttura ufficiale pacchetti EP6:
+- `u16 length | u16 opcode | byte[length-4] payload` (little endian)
+- Encryption RC4 parte da opcode, length NON cifrata
+- Opcode noti: `0xA10x` login, `0x01xx` character, `0x05xx` ingame movement/attack
+- Opcode `0x0A01` = CUSTOM nostro (non in docs) — client tamper report → handler in sdev.dll
+- **Dispatch ps_game.exe** a `0x4784D6`: `eax = opcode - 0x501`, fuori range `> 0x58` → `closesocket` → crash
 
 ---
 

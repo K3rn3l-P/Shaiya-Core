@@ -1,10 +1,16 @@
 #include <util/util.h>
+#include <util/ini/ini.h>
+#include <cstdio>
+#include <cstring>
+#include <unordered_map>
+#include <windows.h>
 #include <shaiya/include/common/ItemEffect.h>
 #include <shaiya/include/common/ItemSlot.h>
 #include <shaiya/include/network/game/incoming/0500.h>
 #include <shaiya/include/network/game/outgoing/0200.h>
 #include "include/main.h"
 #include "include/etain_shield.h"
+#include "include/security_logger.h"
 #include "include/shaiya/CItem.h"
 #include "include/shaiya/CObject.h"
 #include "include/shaiya/CUser.h"
@@ -15,8 +21,39 @@
 #include "include/shaiya/UserHelper.h"
 using namespace shaiya;
 
+// ---------------------------------------------------------------------------
+// Packet flood guard — file-scope state, accessed from packet_pc and hook init
+// ---------------------------------------------------------------------------
+namespace
+{
+    struct FloodState { DWORD windowStart; uint32_t count; };
+    static std::unordered_map<uint32_t, FloodState> g_flood;
+    static CRITICAL_SECTION g_flood_cs;
+    static constexpr uint32_t kFloodLimit = 300;  // packets/s threshold
+}
+
 namespace packet_pc
 {
+    void check_packet_flood(CUser* user)
+    {
+        if (!user || !user->billingId) return;
+
+        DWORD now = GetTickCount();
+        EnterCriticalSection(&g_flood_cs);
+        auto& st = g_flood[user->billingId];
+        if (now - st.windowStart >= 1000) { st.windowStart = now; st.count = 0; }
+        ++st.count;
+        bool first_over = (st.count == kFloodLimit + 1);
+        LeaveCriticalSection(&g_flood_cs);
+
+        if (first_over)
+        {
+            char detail[48];
+            std::snprintf(detail, sizeof(detail), "pkt/s>%u bid=%u", kFloodLimit, user->billingId);
+            security_logger::log("server", user->username.data(), "PACKET_FLOOD", detail);
+        }
+    }
+
     bool move_to_pending_position(CUser* user, bool& changedMap)
     {
         changedMap = user->mapId != user->moveMapId;
@@ -116,6 +153,68 @@ namespace packet_pc
             CUser::ItemUseNSend(user, user->savePosUseBag, user->savePosUseSlot, changedMap);
     }
 
+    // -----------------------------------------------------------------------
+    // 0x0A01 — Security tamper report (client → server, ingame)
+    // -----------------------------------------------------------------------
+    #pragma pack(push, 1)
+    struct SecurityReportIncoming { uint16_t size; uint16_t opcode; uint8_t flags; };
+    #pragma pack(pop)
+
+    // ANTI_TAMPER kick policy — letta da GMSecurity.ini [ANTI_TAMPER], LE STESSE chiavi
+    // di security_report.php (LogOnly + KickOnDebugger/CheatProc/DllInject/MemPatch).
+    // Così la decisione di kick lato gioco == quella del PHP /kickuid (rispetta LogOnly).
+    // Cache con refresh ogni 30s per non leggere il file ad ogni pacchetto 0x0A01.
+    static bool tamper_should_kick(uint8_t flags)
+    {
+        static DWORD s_lastLoad   = 0;
+        static bool  s_logOnly     = true;
+        static bool  s_kDebugger   = false;
+        static bool  s_kCheatProc  = false;
+        static bool  s_kDllInject  = false;
+        static bool  s_kMemPatch   = false;
+
+        DWORD now = GetTickCount();
+        if (s_lastLoad == 0 || (now - s_lastLoad) > 30000)
+        {
+            const wchar_t* ini = L"C:\\ShaiyaServer\\PSM_Client\\Bin\\Data\\GMSecurity.ini";
+            s_logOnly    = util::ini::get_value(L"ANTI_TAMPER", L"LogOnly",         1, ini) != 0;
+            s_kDebugger  = util::ini::get_value(L"ANTI_TAMPER", L"KickOnDebugger",  0, ini) != 0;
+            s_kCheatProc = util::ini::get_value(L"ANTI_TAMPER", L"KickOnCheatProc", 0, ini) != 0;
+            s_kDllInject = util::ini::get_value(L"ANTI_TAMPER", L"KickOnDllInject", 0, ini) != 0;
+            s_kMemPatch  = util::ini::get_value(L"ANTI_TAMPER", L"KickOnMemPatch",  0, ini) != 0;
+            s_lastLoad   = now;
+        }
+
+        if (s_logOnly || flags == 0) return false;
+        if ((flags & 0x02) && s_kDebugger)  return true;  // DEBUGGER
+        if ((flags & 0x08) && s_kCheatProc) return true;  // CHEAT_PROC
+        if ((flags & 0x01) && s_kDllInject) return true;  // DLL_INJECT
+        if ((flags & 0x04) && s_kMemPatch)  return true;  // MEM_PATCH
+        return false;
+    }
+
+    void handler_0x0A01(CUser* user, SecurityReportIncoming* pkt)
+    {
+        if (!user || !pkt) return;
+        // Bounds check: scarta pacchetti troncati prima di leggere ->flags (offset 4).
+        if (pkt->size < sizeof(SecurityReportIncoming)) return;
+        const uint8_t f = pkt->flags;
+        char detail[128];
+        std::snprintf(detail, sizeof(detail),
+            "flags=0x%02X [%s%s%s%s]",
+            f,
+            (f & 0x01) ? "DLL_INJECT " : "",
+            (f & 0x02) ? "DEBUGGER "   : "",
+            (f & 0x04) ? "MEM_PATCH "  : "",
+            (f & 0x08) ? "CHEAT_PROC"  : "");
+        security_logger::log("client", user->username.data(), "TAMPER_REPORT", detail);
+
+        // Kick lato gioco — additivo a /kickuid del PHP (defense-in-depth, kick istantaneo
+        // senza giro SQL). Stessa policy [ANTI_TAMPER] del PHP, quindi rispetta LogOnly.
+        if (tamper_should_kick(f))
+            etain_shield::kick_user(user);
+    }
+
     /// <summary>
     /// EtainShield: validates 0x501 movement packet before the native handler.
     /// Returns 1 (allow) or 0 (drop).
@@ -145,12 +244,19 @@ namespace packet_pc
     }
 }
 
+
 unsigned u0x4784DB = 0x4784DB;
 unsigned u0x479155 = 0x479155;
 void __declspec(naked) naked_0x4784D6()
 {
     __asm
     {
+        pushad
+        push ecx  // user (CUser*)
+        call packet_pc::check_packet_flood
+        add esp,0x4
+        popad
+
         add eax,-0x501
 
         // EtainShield: intercept opcode 0x501 (movement) — eax == 0
@@ -167,6 +273,11 @@ void __declspec(naked) naked_0x4784D6()
 
         cmp eax,0x59
         je case_0x55A
+
+        // 0x0A01 - 0x501 = 0x500 — tamper report from client
+        cmp eax,0x500
+        je case_0x0A01
+
         jmp u0x4784DB
 
         // --- 0x501: Movement ---
@@ -181,7 +292,6 @@ void __declspec(naked) naked_0x4784D6()
         jz drop_0x501
 
         popad
-        // Validation passed — continue to original 0x501 handler.
         xor eax,eax
         jmp u0x4784DB
 
@@ -201,13 +311,11 @@ void __declspec(naked) naked_0x4784D6()
         jz drop_0x502
 
         popad
-        // Validation passed — restore eax=1 and continue to native handler.
         mov eax,0x1
         jmp u0x4784DB
 
         drop_0x502:
         popad
-        // Out of range — drop the attack packet.
         jmp u0x479155
 
         // --- 0x503: Basic attack on mob ---
@@ -222,13 +330,11 @@ void __declspec(naked) naked_0x4784D6()
         jz drop_0x503
 
         popad
-        // Validation passed — restore eax=2 and continue to native handler.
         mov eax,0x2
         jmp u0x4784DB
 
         drop_0x503:
         popad
-        // Out of range — drop the attack packet.
         jmp u0x479155
 
         // --- 0x55A: Town move scroll ---
@@ -238,6 +344,19 @@ void __declspec(naked) naked_0x4784D6()
         push ebp // packet
         push ecx // user
         call packet_pc::handler_0x55A
+        add esp,0x8
+
+        popad
+
+        jmp u0x479155
+
+        // --- 0x0A01: Client tamper report ---
+        case_0x0A01:
+        pushad
+
+        push ebp // packet (SecurityReportIncoming*)
+        push ecx // user (CUser*)
+        call packet_pc::handler_0x0A01
         add esp,0x8
 
         popad
@@ -279,6 +398,8 @@ void __declspec(naked) naked_0x49DDBF()
 
 void hook::packet_pc()
 {
+    InitializeCriticalSection(&g_flood_cs);
+
     // CUser::PacketPC
     util::detour((void*)0x4784D6, naked_0x4784D6, 5);
     // CUser::UpdateResetPosition

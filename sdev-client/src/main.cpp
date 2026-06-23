@@ -2,7 +2,9 @@
 
 void Main()
 {
+    hook::compute_game_hash();   // PRIMA DI TUTTO: SHA256(.text) pulita, zero detour installati
     hook::sah_decrypt_init();
+    hook::anti_tamper();
     hook::command();
     hook::imgui_layer();
     hook::item_icon();

@@ -278,52 +278,10 @@ static void do_sah_decrypt_work()
     }
     diag_log("SAFB_OK");
 
-    // Compute SHA256(game.exe)[0:8] for server-side game integrity check in 0xA101 packet.
-    // ps_login verifies this against GameHashHex in GMSecurity.ini.
-    // Independent of Updater.exe: even a modified Updater cannot bypass this check.
-    {
-        char exePath[MAX_PATH] = {};
-        DWORD exePathLen = GetModuleFileNameA(nullptr, exePath, MAX_PATH);
-
-        BCRYPT_ALG_HANDLE  hAlg  = nullptr;
-        BCRYPT_HASH_HANDLE hHash = nullptr;
-        uint8_t sha256[32] = {};
-        bool ok = false;
-
-        if (exePathLen > 0 && exePathLen < MAX_PATH &&
-            BCRYPT_SUCCESS(BCryptOpenAlgorithmProvider(&hAlg, BCRYPT_SHA256_ALGORITHM, nullptr, 0)))
-        {
-            if (BCRYPT_SUCCESS(BCryptCreateHash(hAlg, &hHash, nullptr, 0, nullptr, 0, 0)))
-            {
-                HANDLE hFile = CreateFileA(exePath, GENERIC_READ, FILE_SHARE_READ,
-                                            nullptr, OPEN_EXISTING, 0, nullptr);
-                if (hFile != INVALID_HANDLE_VALUE)
-                {
-                    uint8_t buf[65536];
-                    DWORD   nRead = 0;
-                    ok = true;
-                    while (ReadFile(hFile, buf, sizeof(buf), &nRead, nullptr) && nRead > 0)
-                        BCryptHashData(hHash, buf, nRead, 0);
-                    CloseHandle(hFile);
-                    ok = BCRYPT_SUCCESS(BCryptFinishHash(hHash, sha256, 32, 0)) && ok;
-                }
-                BCryptDestroyHash(hHash);
-            }
-            BCryptCloseAlgorithmProvider(hAlg, 0);
-        }
-
-        if (ok)
-        {
-            memcpy(g_sah_token, sha256, 8);
-            g_sah_token_ready = true;
-            diag_log("GAME_HASH_READY");
-        }
-        else
-        {
-            diag_log("ERR_GAME_HASH");
-        }
-        SecureZeroMemory(sha256, sizeof(sha256));
-    }
+    // g_sah_token calcolato da hook::compute_game_hash() all'inizio di Main(),
+    // prima di qualsiasi util::detour. Non ricalcolare qui.
+    if (!g_sah_token_ready)
+        diag_log("WARN_HASH_NOT_READY");
 
     SecureZeroMemory(g_sah_key, 32);
     g_sah_key_ready = false;
@@ -447,6 +405,55 @@ void hook::sah_decrypt_init()
     g_sah_key_ready = true;
     // size=7: displaces PUSH -1 (2 bytes) + PUSH 0x72c651 (5 bytes)
     util::detour(reinterpret_cast<void*>(0x0040e270u), hook_FUN_0040e270, 7);
+}
+
+// ---------------------------------------------------------------------------
+// hook::compute_game_hash  — chiamare PRIMA di qualsiasi util::detour in Main().
+// Legge SHA256(sezione .text di game.exe in memoria) mentre e' ancora pulita.
+// Se chiamata dopo i detour, i JMP rel32 che puntano alla DLL inquinano il hash.
+// ---------------------------------------------------------------------------
+void hook::compute_game_hash()
+{
+    auto* base = reinterpret_cast<uint8_t*>(GetModuleHandleA(nullptr));
+    if (!base) return;
+
+    auto* dos = reinterpret_cast<IMAGE_DOS_HEADER*>(base);
+    if (dos->e_magic != IMAGE_DOS_SIGNATURE) return;
+    auto* nt  = reinterpret_cast<IMAGE_NT_HEADERS*>(base + dos->e_lfanew);
+    if (nt->Signature != IMAGE_NT_SIGNATURE) return;
+    auto* sec = IMAGE_FIRST_SECTION(nt);
+
+    const uint8_t* textBase = nullptr;
+    DWORD          textSize = 0;
+    for (WORD i = 0; i < nt->FileHeader.NumberOfSections; ++i, ++sec)
+    {
+        if (std::memcmp(sec->Name, ".text", 5) == 0)
+        {
+            textBase = base + sec->VirtualAddress;
+            textSize = sec->Misc.VirtualSize;
+            break;
+        }
+    }
+    if (!textBase || textSize == 0) return;
+
+    BCRYPT_ALG_HANDLE  hAlg  = nullptr;
+    BCRYPT_HASH_HANDLE hHash = nullptr;
+    uint8_t sha256[32] = {};
+
+    if (!BCRYPT_SUCCESS(BCryptOpenAlgorithmProvider(&hAlg, BCRYPT_SHA256_ALGORITHM, nullptr, 0)))
+        return;
+    if (BCRYPT_SUCCESS(BCryptCreateHash(hAlg, &hHash, nullptr, 0, nullptr, 0, 0)))
+    {
+        if (BCRYPT_SUCCESS(BCryptHashData(hHash, const_cast<PUCHAR>(textBase), textSize, 0)) &&
+            BCRYPT_SUCCESS(BCryptFinishHash(hHash, sha256, 32, 0)))
+        {
+            memcpy(g_sah_token, sha256, 8);
+            g_sah_token_ready = true;
+        }
+        BCryptDestroyHash(hHash);
+    }
+    BCryptCloseAlgorithmProvider(hAlg, 0);
+    SecureZeroMemory(sha256, sizeof(sha256));
 }
 
 // ---------------------------------------------------------------------------

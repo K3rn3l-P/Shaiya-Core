@@ -266,6 +266,18 @@ namespace window
             return 0;
         }
 
+        if (msg == kClientTamperReportMsg)
+        {
+#pragma pack(push, 1)
+            struct { uint16_t size; uint16_t opcode; uint8_t flags; } pkt;
+#pragma pack(pop)
+            pkt.size   = sizeof(pkt);
+            pkt.opcode = 0x0A01;
+            pkt.flags  = static_cast<uint8_t>(wParam);
+            CNetwork::Send(&pkt, sizeof(pkt));
+            return 0;
+        }
+
         if (g_hwndIsUnicode)
             return CallWindowProcW(g_originalGameWndProc, hwnd, msg, wParam, lParam);
 
@@ -305,6 +317,11 @@ namespace window
             && IsWindow(hwnd)
             && g_hookedGameHwnd == hwnd
             && g_originalGameWndProc != nullptr;
+    }
+
+    HWND get_game_hwnd()
+    {
+        return g_hookedGameHwnd;
     }
 }
 
