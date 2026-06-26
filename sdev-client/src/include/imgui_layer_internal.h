@@ -68,32 +68,22 @@ namespace imgui_layer
     constexpr auto kEmojiPickerSize = ImVec2(190.0f, 200.0f);
     constexpr auto kEmojiPickerIconSize = ImVec2(20.0f, 20.0f);
     constexpr auto kDefaultRewardButtonPosition = ImVec2(350.0f, 938.0f);
-    constexpr const char* kRewardBtnXKey = "REWARD_BTN_X";
-    constexpr const char* kRewardBtnYKey = "REWARD_BTN_Y";
     constexpr const char* kRewardBarXKey = "REWARD_BAR_X";
     constexpr const char* kRewardBarYKey = "REWARD_BAR_Y";
     constexpr auto kRewardButtonSize = ImVec2(32.0f, 33.0f);
     constexpr auto kDefaultRouletteButtonPosition = ImVec2(386.0f, 938.0f);
-    constexpr const char* kRouletteBtnXKey = "ROULETTE_BTN_X";
-    constexpr const char* kRouletteBtnYKey = "ROULETTE_BTN_Y";
     constexpr auto kRouletteButtonSize = ImVec2(32.0f, 33.0f);
     constexpr auto kDefaultSettingsButtonPosition = ImVec2(422.0f, 938.0f);
-    constexpr const char* kSettingsBtnXKey = "SETTINGS_BTN_X";
-    constexpr const char* kSettingsBtnYKey = "SETTINGS_BTN_Y";
     constexpr const char* kSettingsPanelXKey = "SETTINGS_PANEL_X";
     constexpr const char* kSettingsPanelYKey = "SETTINGS_PANEL_Y";
     constexpr auto kSettingsButtonSize = ImVec2(32.0f, 33.0f);
     constexpr auto kSettingsPanelSize = ImVec2(210.0f, 298.0f);
     constexpr auto kDefaultNpcButtonPosition = ImVec2(458.0f, 938.0f);
-    constexpr const char* kNpcBtnXKey = "NPC_BTN_X";
-    constexpr const char* kNpcBtnYKey = "NPC_BTN_Y";
     constexpr const char* kNpcPanelXKey = "NPC_PANEL_X";
     constexpr const char* kNpcPanelYKey = "NPC_PANEL_Y";
     constexpr auto kNpcButtonSize = ImVec2(32.0f, 33.0f);
     constexpr auto kNpcPanelSize = ImVec2(210.0f, 270.0f);
     constexpr auto kDefaultTeleportButtonPosition = ImVec2(494.0f, 938.0f);
-    constexpr const char* kTeleportBtnXKey = "TELEPORT_BTN_X";
-    constexpr const char* kTeleportBtnYKey = "TELEPORT_BTN_Y";
     constexpr const char* kTeleportPanelXKey = "TELEPORT_PANEL_X";
     constexpr const char* kTeleportPanelYKey = "TELEPORT_PANEL_Y";
     constexpr auto kTeleportButtonSize = ImVec2(32.0f, 33.0f);
@@ -113,6 +103,7 @@ namespace imgui_layer
     // cooldown entirely.  We still keep a short frame debounce so the
     // overlay doesn't flicker on the exact frame the state flips to 6.
     constexpr uintptr_t kGameScreenStateAddr = 0x7C48F8;
+    constexpr int       kScreenStateCharSelect = 3;
     constexpr int       kScreenStateInGame  = 6;
     constexpr int   kMinStableFrames     = 30;    // ~0.5 s at 60 fps
 
@@ -153,10 +144,12 @@ namespace imgui_layer
     inline GetDeviceStateFn g_originalMouse2GetDeviceState = nullptr;
     inline bool g_mouseDeviceHooked = false;
 
-    // DirectInput keyboard hook state
+    // DirectInput keyboard hook state — swallow keys (movement, hotkeys)
+    // dal gioco mentre un campo testo ImGui dei nostri pannelli (GM panel,
+    // map editor) e' attivo, cosi' la digitazione non muove il personaggio.
+    // L'install e' consolidato in install_dinput_mouse_hook (v1.3).
     inline GetDeviceStateFn g_originalKeyboardGetDeviceState = nullptr;
     inline GetDeviceStateFn g_originalKeyboard2GetDeviceState = nullptr;
-    inline bool g_keyboardDeviceHooked = false;
 
     // Hit-test rects for every overlay element
     // Main map anchor — object pointer captured once from init; pos/size read live each frame.
@@ -233,26 +226,13 @@ namespace imgui_layer
     // (native chat UI hook removed — only chat text hiding remains)
     inline bool g_draggedPanel = false;
     inline bool g_draggingPanel = false;
+    // Panel scale drag (roulette panel resize handle) — feature custom nostra
     inline bool g_draggingPanelScale = false;
     inline bool g_draggedPanelScale = false;
-    inline bool g_draggingRewardButton = false;
-    inline bool g_draggedRewardButton = false;
-    inline bool g_draggingRouletteButton = false;
-    inline bool g_draggedRouletteButton = false;
-    inline bool g_draggingSettingsButton = false;
-    inline bool g_draggedSettingsButton = false;
-    inline bool g_draggingNpcButton = false;
-    inline bool g_draggedNpcButton = false;
-    inline bool g_draggingTeleportButton = false;
-    inline bool g_draggedTeleportButton = false;
     inline bool g_panelMouseWasDown = false;
     inline ImVec2 g_panelDragOffset = ImVec2(0.0f, 0.0f);
     inline float g_panelScaleDragStart = 1.0f;
-    inline ImVec2 g_rewardButtonDragOffset = ImVec2(0.0f, 0.0f);
-    inline ImVec2 g_rouletteButtonDragOffset = ImVec2(0.0f, 0.0f);
-    inline ImVec2 g_settingsButtonDragOffset = ImVec2(0.0f, 0.0f);
-    inline ImVec2 g_npcButtonDragOffset = ImVec2(0.0f, 0.0f);
-    inline ImVec2 g_teleportButtonDragOffset = ImVec2(0.0f, 0.0f);
+    // (v1.3: toolbar buttons fissi — drag-state e offset rimossi)
     inline bool g_emojisEnabled = true;
     inline bool g_gifsEnabled = true;
     inline bool g_clearImguiActiveId = false;
@@ -510,6 +490,8 @@ namespace imgui_layer
     {
         DWORD tick;
         std::vector<ChatEmojiTokenOverlay> tokens;
+        std::string text;          // token-stripped UTF-8 (for bubble re-render)
+        DWORD lastSeenTick = 0;    // refreshed each native draw; for staleness expiry
     };
 
     struct FloatingEmojiRenderOverlay
@@ -520,6 +502,7 @@ namespace imgui_layer
         int y;
         bool lowerChat;
         std::vector<ChatEmojiTokenOverlay> tokens;
+        std::string text;          // bubble UTF-8 text to draw with the Unicode font
     };
 
     struct LowerChatEmojiLine
@@ -723,7 +706,11 @@ namespace imgui_layer
     void __cdecl capture_created_static_text(void* staticText);
     void __cdecl capture_chat_balloon_text(void* chatBalloon);
     void __cdecl record_native_text_draw_probe(std::uintptr_t returnAddress, const char* text, int x, int y);
-    void __cdecl record_floating_static_text_render(void* staticText, int x, int y);
+    bool __cdecl record_floating_static_text_render(void* staticText, int x, int y);
+    void draw_unicode_chat_text(ImDrawList* drawList, ImFont* font, float fontSize,
+                                float x, float y, ImU32 color, ImU32 shadow,
+                                const char* text, bool outline);
+    float measure_unicode_chat_text(ImFont* font, float fontSize, const char* text);
     void set_chat_scroll_offset(int value);
 
     // imgui_layer.cpp  (core)

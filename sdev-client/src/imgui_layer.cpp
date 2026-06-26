@@ -4,6 +4,14 @@
 #include "include/custom_chat.h"
 #include "include/shaiya/RewardItemEvent.h"
 #include "include/shaiya/Roulette.h"
+#include <intrin.h>
+#include <comdef.h>
+#include <exdisp.h>
+#include <shldisp.h>
+#include <shlguid.h>
+#include <shlobj_core.h>
+
+#pragma intrinsic(_ReturnAddress)
 
 void naked_chat_add_token_filter();
 void naked_chat_balloon_text_create();
@@ -46,6 +54,23 @@ Chat type notes
 
 namespace imgui_layer
 {
+    void reset_overlay_rects()
+    {
+        g_panelDragRect = {};
+        g_panelWindowRect = {};
+        g_emojiButtonRect = {};
+        g_emojiPickerRect = {};
+        g_rewardButtonRect = {};
+        g_rewardBarRect = {};
+        g_rouletteButtonRect = {};
+        g_settingsButtonRect = {};
+        g_settingsPanelRect = {};
+        g_npcButtonRect = {};
+        g_npcPanelRect = {};
+        g_teleportButtonRect = {};
+        g_teleportPanelRect = {};
+    }
+
     namespace
     {
         bool is_keyboard_message(UINT msg)
@@ -153,7 +178,7 @@ namespace imgui_layer
         if (g_mouseDeviceHooked || !g_var)
             return;
 
-        auto hookDevice = [](shaiya::Mouse* m, GetDeviceStateFn* outOriginal) {
+        auto hookMouse = [](shaiya::Mouse* m, GetDeviceStateFn* outOriginal) {
             if (!m || !m->device)
                 return;
             void* orig = nullptr;
@@ -161,23 +186,15 @@ namespace imgui_layer
                 *outOriginal = reinterpret_cast<GetDeviceStateFn>(orig);
             };
 
-        hookDevice(g_var->input.mouse, &g_originalMouseGetDeviceState);
-        hookDevice(g_var->input.mouse2, &g_originalMouse2GetDeviceState);
+        hookMouse(g_var->input.mouse,  &g_originalMouseGetDeviceState);
+        hookMouse(g_var->input.mouse2, &g_originalMouse2GetDeviceState);
 
         // If both devices share the same vtable (common), mouse2 hook
         // returns the already-hooked function.  Fall back to mouse1's original.
         if (g_originalMouse2GetDeviceState == reinterpret_cast<GetDeviceStateFn>(hooked_mouse_get_device_state))
             g_originalMouse2GetDeviceState = g_originalMouseGetDeviceState;
 
-        g_mouseDeviceHooked = (g_originalMouseGetDeviceState != nullptr);
-    }
-
-    void install_dinput_keyboard_hook()
-    {
-        if (g_keyboardDeviceHooked || !g_var)
-            return;
-
-        auto hookDevice = [](shaiya::Keyboard* k, GetDeviceStateFn* outOriginal) {
+        auto hookKeyboard = [](shaiya::Keyboard* k, GetDeviceStateFn* outOriginal) {
             if (!k || !k->device)
                 return;
             void* orig = nullptr;
@@ -185,13 +202,12 @@ namespace imgui_layer
                 *outOriginal = reinterpret_cast<GetDeviceStateFn>(orig);
         };
 
-        hookDevice(g_var->input.keyboard, &g_originalKeyboardGetDeviceState);
-        hookDevice(g_var->input.keyboard2, &g_originalKeyboard2GetDeviceState);
-
+        hookKeyboard(g_var->input.keyboard,  &g_originalKeyboardGetDeviceState);
+        hookKeyboard(g_var->input.keyboard2, &g_originalKeyboard2GetDeviceState);
         if (g_originalKeyboard2GetDeviceState == reinterpret_cast<GetDeviceStateFn>(hooked_keyboard_get_device_state))
             g_originalKeyboard2GetDeviceState = g_originalKeyboardGetDeviceState;
 
-        g_keyboardDeviceHooked = (g_originalKeyboardGetDeviceState != nullptr);
+        g_mouseDeviceHooked = (g_originalMouseGetDeviceState != nullptr);
     }
 
     // -----------------------------------------------------------------------
@@ -620,6 +636,11 @@ namespace imgui_layer
 
         ImGui_ImplWin32_Init(g_var->hwnd);
         ImGui_ImplDX9_Init(device);
+
+        // Load the Unicode chat font into the atlas before the first frame
+        // builds it (lazy-added fonts never get a glyph texture).
+        custom_chat::load_chat_font();
+
         g_imguiInitialized = true;
         g_panelWindowRect = {};
         g_emojiButtonRect = {};
@@ -636,8 +657,8 @@ namespace imgui_layer
 
         // Hook DirectInput mouse polling so clicks are suppressed at the
         // earliest point in the game loop when ImGui owns the cursor.
+        // install_dinput_mouse_hook aggancia sia mouse che tastiera (v1.3)
         install_dinput_mouse_hook();
-        install_dinput_keyboard_hook();
         init_player_hp_bar();
     }
 
@@ -651,6 +672,10 @@ namespace imgui_layer
         ImGui_ImplDX9_Shutdown();
         ImGui_ImplWin32_Shutdown();
         ImGui::DestroyContext();
+        // The atlas (and our chat font) is owned by the context just destroyed;
+        // force load_chat_font to rebuild it into the fresh atlas on re-init.
+        g_parallelFont = nullptr;
+        g_parallelFontLoaded = false;
         g_imguiInitialized = false;
         g_device = nullptr;
         g_overlayHwnd = nullptr;
@@ -745,19 +770,7 @@ namespace imgui_layer
             g_rollMouseWasDown = false;
         }
 
-        g_panelDragRect = {};
-        g_panelWindowRect = {};
-        g_emojiButtonRect = {};
-        g_emojiPickerRect = {};
-        g_rewardButtonRect = {};
-        g_rewardBarRect = {};
-        g_rouletteButtonRect = {};
-        g_settingsButtonRect = {};
-        g_settingsPanelRect = {};
-        g_npcButtonRect = {};
-        g_npcPanelRect = {};
-        g_teleportButtonRect = {};
-        g_teleportPanelRect = {};
+        reset_overlay_rects();
         ensure_emoji_catalog_loaded();
 
         // Pre-cache overlay textures right after the SAH catalog scan so
@@ -825,6 +838,11 @@ namespace imgui_layer
             }
         }
 
+        // Flush the queued native-font chat text before ImGui renders, so the
+        // overlay panels stay above the chat text.
+        if (!g_nativeUIHidden)
+            custom_chat::flush_d3dx_text();
+
         ImGui::EndFrame();
         ImGui::Render();
 
@@ -836,11 +854,6 @@ namespace imgui_layer
         auto* drawData = ImGui::GetDrawData();
         if (drawData && drawData->CmdListsCount > 0)
             ImGui_ImplDX9_RenderDrawData(drawData);
-
-        // Flush D3DX text runs AFTER ImGui so native-font text renders on
-        // top of the ImGui layer (emoji texture quads stay behind text).
-        if (!g_nativeUIHidden)
-            custom_chat::flush_d3dx_text();
 
         save_imgui_settings_if_dirty(750);
     }
@@ -890,8 +903,8 @@ namespace imgui_layer
 
     }
 
-    DWORD WINAPI render_thread(LPVOID)
-    {
+DWORD WINAPI render_thread(LPVOID)
+{
         while (g_running)
         {
             if (!g_var->hwnd || !IsWindow(g_var->hwnd) || !g_var->camera.device)
