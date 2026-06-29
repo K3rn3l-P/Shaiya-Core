@@ -14,6 +14,10 @@
 #pragma comment(lib, "bcrypt.lib")
 #include "include/shaiya/SDatabase.h"
 
+// Forward decl: consumo single-use del launchToken nonce (impl nel namespace
+// security_logger piu sotto — riusa la connessione ODBC a PS_UserData).
+namespace security_logger { bool consume_launch_nonce(uint32_t nonce); }
+
 namespace gm_security
 {
     namespace
@@ -470,6 +474,13 @@ namespace gm_security
 
     bool verify_rsa_client_token(uint32_t token)
     {
+        // Modalita nonce single-use (DB): se [SETTINGS] UseLaunchNonce=1 il token e' un
+        // nonce monouso emesso da launch-provision.php (dbo.GameLaunchNonces), consumato
+        // qui atomicamente (fail-closed). Default 0 = vecchio HMAC-window (non-breaking).
+        // Deploy accoppiato: flag=1 SOLO con provision->nonce + tabella create insieme.
+        if (GetPrivateProfileIntA(kSettingsSection, "UseLaunchNonce", 0, get_ini_path()) != 0)
+            return security_logger::consume_launch_nonce(token);
+
         const char* secret = get_client_secret();
         if (!secret || !secret[0])
             return false;  // segreto non configurato → nega sempre
@@ -753,6 +764,41 @@ namespace security_logger
         std::lock_guard<std::mutex> lk(g_mtx);
         write_file_unlocked(ip, username, event_type, detail);
         write_db_unlocked(ip, username, event_type, detail);
+    }
+
+    // Consuma atomicamente un launchToken nonce single-use (dbo.GameLaunchNonces).
+    // UPDATE ... WHERE Used=0 AND non scaduto: se 1 riga aggiornata, il nonce era
+    // valido ed e' ora consumato (no TOCTOU). fail-CLOSED: DB non disponibile -> nega.
+    bool consume_launch_nonce(uint32_t nonce)
+    {
+        std::lock_guard<std::mutex> lk(g_mtx);
+        db_init_unlocked();
+        if (!g_db_ok) return false;  // gate di sicurezza: senza DB nega il login
+
+        SQLHSTMT hStmt = SQL_NULL_HSTMT;
+        if (SQLAllocHandle(SQL_HANDLE_STMT, g_hDbc, &hStmt) != SQL_SUCCESS)
+            return false;
+
+        bool ok = false;
+        static const SQLCHAR kSql[] =
+            "UPDATE [PS_UserData].[dbo].[GameLaunchNonces] SET Used=1"
+            " WHERE Nonce=? AND Used=0 AND ExpiresAt>SYSUTCDATETIME()";
+        if (SQLPrepareA(hStmt, (SQLCHAR*)kSql, SQL_NTS) == SQL_SUCCESS)
+        {
+            SQLBIGINT n = static_cast<SQLBIGINT>(nonce); // uint32 -> bigint (no segno)
+            SQLLEN cb = 0;
+            SQLBindParameter(hStmt, 1, SQL_PARAM_INPUT, SQL_C_SBIGINT, SQL_BIGINT,
+                             0, 0, &n, 0, &cb);
+            SQLRETURN rc = SQLExecute(hStmt);
+            if (rc == SQL_SUCCESS || rc == SQL_SUCCESS_WITH_INFO)
+            {
+                SQLLEN rows = 0;
+                if (SQLRowCount(hStmt, &rows) == SQL_SUCCESS && rows == 1)
+                    ok = true;
+            }
+        }
+        SQLFreeHandle(SQL_HANDLE_STMT, hStmt);
+        return ok;
     }
 }
 

@@ -42,6 +42,7 @@ const char* get_custom_eft_name_from_ui();
 namespace hook
 {
     void compute_game_hash();   // SHA256(.text) PRIMA dei detour — chiamare per primo in Main()
+    void auto_login();          // legge+azzera SDEV_LOGIN_USER/PW (auto-login in-process)
     void sah_decrypt_init();
     void sah_decrypt_teardown();
     void anti_tamper();
@@ -97,6 +98,18 @@ namespace sec_token
     // Vuoto se il gioco è stato lanciato senza updater (bypass).
     const char* get();
 }
+
+namespace auto_login
+{
+    // Auto-login in-process: tick() ogni frame (poll login screen + inietta creds +
+    // applica patch), on_login_sent() ripristina i patch dopo il send 0xA101.
+    void init();
+    void tick();
+    void on_login_sent();
+}
+
+// Chiamata dall'hook ASM del send 0xA101 (packet.cpp) per ripristinare i patch.
+extern "C" void auto_login_after_send();
 
 namespace name_color
 {

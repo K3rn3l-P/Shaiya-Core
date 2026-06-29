@@ -356,6 +356,19 @@ static uint16_t get_current_map_id()
     return g_pPlayerData->mapId;
 }
 
+// Il Map Editor legge gli asset dalla cartella "Data" estratta accanto alla DLL.
+// Con i client che spediscono solo data.saf/sah (Data non estratta) tutte le
+// texture/modelli falliscono silenziosamente. Questo check permette di avvisare.
+static bool data_folder_present()
+{
+    char dllDir[MAX_PATH] = {};
+    if (!get_dll_dir(dllDir, sizeof(dllDir))) return true; // non bloccare se path ignoto
+    char probe[MAX_PATH] = {};
+    snprintf(probe, sizeof(probe), "%s\\Data\\World", dllDir);
+    DWORD a = GetFileAttributesA(probe);
+    return (a != INVALID_FILE_ATTRIBUTES) && (a & FILE_ATTRIBUTE_DIRECTORY);
+}
+
 static bool build_wld_paths(char* srcOut, size_t srcSz, char* dstOut, size_t dstSz, uint16_t mapId)
 {
     char dllDir[MAX_PATH] = {};
@@ -3378,6 +3391,24 @@ namespace imgui_layer {
         ImGui::Begin("##content_me", nullptr,
             ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
             ImGuiWindowFlags_NoMove     | ImGuiWindowFlags_NoBringToFrontOnFocus);
+
+        // Avviso: cartella Data non estratta → texture/modelli non caricano.
+        if (!data_folder_present()) {
+            ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.32f,0.10f,0.10f,0.95f));
+            ImGui::BeginChild("##no_data_warn", ImVec2(0.0f, 92.0f), true);
+            ImGui::TextColored(ImVec4(1.0f,0.55f,0.20f,1.0f),
+                "[!] Cartella \"Data\" non trovata nel client.");
+            ImGui::TextWrapped(
+                "Il Map Editor legge texture e modelli da \"Data\\\" accanto al gioco. "
+                "Sembra che il client abbia solo data.saf/sah non estratto: "
+                "le sezioni Building/Trees/Grass/Vani/Props/Wall/Others, Terra e "
+                "Scatter resteranno vuote.");
+            ImGui::TextColored(ImVec4(0.85f,0.85f,0.55f,1.0f),
+                "Estrai data.saf/sah in <client>\\Data\\ (SahEditor v2.22) e riavvia.");
+            ImGui::EndChild();
+            ImGui::PopStyleColor();
+            ImGui::Separator();
+        }
 
         if (s_section == EditorSection::Save)
             draw_save_tab();

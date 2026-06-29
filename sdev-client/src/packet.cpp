@@ -736,6 +736,7 @@ void __declspec(naked) naked_0x5EC5D5()
         push edx
         call append_security_data
         add  esp, 4
+        call auto_login_after_send   // login partito: ripristina i patch del login-flow
         popad
         push 0xF0      // len = 240 (131 + 4 + 8 + 32 + 1 + 64)
         jmp  u0x5EC5DA

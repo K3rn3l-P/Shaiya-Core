@@ -45,3 +45,7 @@ ghidra_projects/
 # OS metadata
 Thumbs.db
 desktop.ini
+/SECURITY-PLAN-ANTICUTTING.md
+/SECURITY-PLAN-CT-PORT.md
+/SECURITY-PLAN-ETAINSHIELD.md
+/SECURITY-STRATEGY.md

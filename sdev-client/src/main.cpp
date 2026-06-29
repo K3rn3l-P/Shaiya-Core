@@ -3,6 +3,7 @@
 void Main()
 {
     hook::compute_game_hash();   // PRIMA DI TUTTO: SHA256(.text) pulita, zero detour installati
+    hook::auto_login();          // legge+azzera SDEV_LOGIN_USER/PW subito dall'env
     hook::sah_decrypt_init();
     hook::anti_tamper();
     hook::command();

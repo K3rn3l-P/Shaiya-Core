@@ -19,7 +19,7 @@ $ErrorActionPreference = 'Continue'
 $sshKey          = "C:\Users\lol\.ssh\id_ed25519"
 $sshHost         = "administrator@10.10.5.91"
 $serverFilesPath = "C:/xampp/htdocs/Updater/Files/sdev.dll"
-$localClientDir  = "C:\Users\lol\Desktop\Shaiya Core Beta v0.11\Shaiya Core Client"
+$localClientDir  = "D:\Download\Shaiya Core Stable v1.3\Shaiya Core Stable v1.3\Shaiya Core Client"
 $sshOpts         = @("-i", $sshKey, "-o", "IdentitiesOnly=yes", "-o", "StrictHostKeyChecking=no")
 
 # ---------------------------------------------------------------------------

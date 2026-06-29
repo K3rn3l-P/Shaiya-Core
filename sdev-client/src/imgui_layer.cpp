@@ -860,6 +860,7 @@ namespace imgui_layer
 
     HRESULT __stdcall present_hook(IDirect3DDevice9* device, const RECT* src, const RECT* dst, HWND hwnd, const RGNDATA* dirty)
     {
+        auto_login::tick();   // auto-login in-process: inietta creds + patch quando la login screen e' attiva
         render_integrated_frame(device);
         return g_originalPresent ? g_originalPresent(device, src, dst, hwnd, dirty) : D3D_OK;
     }
