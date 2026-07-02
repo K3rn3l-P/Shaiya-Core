@@ -124,11 +124,14 @@ namespace
 
         DWORD WINAPI worker(LPVOID)
         {
+            // Comportamento "shift moving" (da Shaiya-Client-Ep6 src/buffs.cpp):
+            // tieni premuto SHIFT + tasto destro mouse → la barra segue il cursore
+            // del gioco (kMouseXAddr/Y, spazio render); rilascia per fermare/salvare.
             for (;;)
             {
-                const auto f6 = GetAsyncKeyState(VK_F6);
-                const auto leftButton = GetAsyncKeyState(VK_LBUTTON);
-                if ((f6 & 0x8000) && (leftButton & 0x8000))
+                const auto shift = GetAsyncKeyState(VK_SHIFT);
+                const auto rightButton = GetAsyncKeyState(VK_RBUTTON);
+                if ((shift & 0x8000) && (rightButton & 0x8000))
                 {
                     g_locationX = *reinterpret_cast<int*>(kMouseXAddr);
                     g_locationY = *reinterpret_cast<int*>(kMouseYAddr);

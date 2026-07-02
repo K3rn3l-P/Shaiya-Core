@@ -253,6 +253,12 @@
     <ClCompile Include="src\main.cpp">
       <Filter>src</Filter>
     </ClCompile>
+    <ClCompile Include="src\itemmall.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\weapon_skin.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
     <ClCompile Include="src\packet.cpp">
       <Filter>src</Filter>
     </ClCompile>

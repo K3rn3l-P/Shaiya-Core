@@ -29,9 +29,9 @@ namespace packet
     {
         static constexpr unsigned int kQuantityHookAddr = 0x42E117;
         static constexpr unsigned int kQuantityPatchAddr = 0x42E127;
-        static constexpr unsigned char kCmpBytes[] = {0x3D, 0xFF, 0x00, 0x00, 0x00};
-        static constexpr unsigned char kNopBytes[] = {0x90, 0x90, 0x90};
-        static constexpr unsigned char kMovBytes[] = {0xFF, 0x00, 0x00, 0x00};
+        static constexpr unsigned char kCmpBytes[] = { 0x3D, 0xFF, 0x00, 0x00, 0x00 };
+        static constexpr unsigned char kNopBytes[] = { 0x90, 0x90, 0x90 };
+        static constexpr unsigned char kMovBytes[] = { 0xFF, 0x00, 0x00, 0x00 };
 
         // Raise the client-side buy/sell quantity limit from 10 to 255.
         // cmp eax,0x0A -> cmp eax,0xFF
@@ -290,9 +290,9 @@ namespace packet
         for (uint32_t i = 0; i < count; ++i)
         {
             reward_item_event::items[i].minutes = incoming->itemList[i].minutes;
-            reward_item_event::items[i].type    = incoming->itemList[i].type;
-            reward_item_event::items[i].typeId  = incoming->itemList[i].typeId;
-            reward_item_event::items[i].count   = incoming->itemList[i].count;
+            reward_item_event::items[i].type = incoming->itemList[i].type;
+            reward_item_event::items[i].typeId = incoming->itemList[i].typeId;
+            reward_item_event::items[i].count = incoming->itemList[i].count;
         }
 
         reward_item_event::hasList = count > 0;
@@ -487,6 +487,40 @@ namespace packet
             }
         }
     }
+    // 0x83B — weapon skin update (server → client): {u16 opcode, u8 type, u8 typeId}
+    // Intercettato e CONSUMATO nel dispatch nativo (naked_0x5F1E10), come gli altri
+    // opcode custom server→client. Opcode 0x83B (non 0x0A03: quello collide con un
+    // handler nativo trade — vedi jump table 0x5f3f70). 0x83B cade nel catch-all
+    // default nativo (jump entry 9 @ 0x5f3a3b) → sicuro da consumare.
+    void handle_weapon_skin_dispatch(void* packet)
+    {
+        if (!packet)
+            return;
+        auto* p = reinterpret_cast<const uint8_t*>(packet);
+        // apply_local_visual gestisce sia set (type!=0) sia clear (type==0, ripristina
+        // l'arma reale) e ricostruisce il modello arma locale (necessario al login/sync:
+        // il render del player locale non si aggiorna da solo dopo il solo store).
+        weapon_skin::apply_local_visual(p[2], p[3]);
+    }
+
+    // 0x83C — whitelist skin (server → client): {u16 opcode, u8 count, (u8 type,typeId,usable)*count}
+    // Inviata all'enter-world: TUTTE le skin + flag usable per la classe del giocatore.
+    void handle_weapon_skin_whitelist_dispatch(void* packet)
+    {
+        if (!packet)
+            return;
+        auto* p = reinterpret_cast<const uint8_t*>(packet);
+        int count = p[2];
+        weapon_skin::set_allowed_skins_from_server(p + 3, count);
+    }
+
+    // 0x83D — weapon skin deny (server → client): il server ha rifiutato la skin
+    // (classe/fazione non compatibile o non in whitelist) → "Cannot equip".
+    void handle_weapon_skin_deny_dispatch(void*)
+    {
+        Static::DrawText_ChatBox(ChatType::Notice26,
+            "Cannot equip: this weapon skin is not allowed for your class.", 0);
+    }
 
     void handle_normalized_packet(void* packet)
     {
@@ -503,20 +537,20 @@ void __declspec(naked) naked_0x59F896()
     __asm
     {
         // CPlayerData->charId
-        mov edi,dword ptr ds:[0x90E2F4]
+        mov edi, dword ptr ds : [0x90E2F4]
         // CCharacter->id
-        cmp edi,[esi+0x34]
+        cmp edi, [esi + 0x34]
         jne wrong_appearance
 
         // sex, size, face, hair
-        mov byte ptr ds:[0x914474],al
-        mov byte ptr ds:[0x913472],cl
-        mov byte ptr ds:[0x913471],dl
-        mov byte ptr ds:[0x913470],bl
+        mov byte ptr ds : [0x914474] , al
+        mov byte ptr ds : [0x913472] , cl
+        mov byte ptr ds : [0x913471] , dl
+        mov byte ptr ds : [0x913470] , bl
 
-        wrong_appearance:
-        mov ecx,esi
-        jmp u0x59F8AF
+        wrong_appearance :
+        mov ecx, esi
+            jmp u0x59F8AF
     }
 }
 
@@ -526,13 +560,13 @@ void __declspec(naked) naked_0x5933F8()
     __asm
     {
         // original
-        mov byte ptr[esi+0x1C9],al
+        mov byte ptr[esi + 0x1C9], al
 
         pushad
 
         push esi // user
         call packet::hook_0x303
-        add esp,0x4
+        add esp, 0x4
 
         popad
 
@@ -546,14 +580,14 @@ void __declspec(naked) naked_0x4EF2F3()
     __asm
     {
         // original
-        mov [eax+0x10],ebx
+        mov[eax + 0x10], ebx
 
         pushad
 
         push ebx // killCount
         push edi // killer
         call packet::hook_0x229
-        add esp,0x8
+        add esp, 0x8
 
         popad
 
@@ -569,13 +603,13 @@ void __declspec(naked) naked_0x593D0F()
     {
         // original
         push 0x0 // arg #16
-        cmp al,0xB
+        cmp al, 0xB
         jne _0x593D73
 
         push 0x0 // arg #15
         jmp u0x593D15
 
-        _0x593D73:
+        _0x593D73 :
         jmp u0x593D73
     }
 }
@@ -589,11 +623,11 @@ void __declspec(naked) naked_0x59EC88()
 
         push eax
         call packet::handle_normalized_packet
-        add esp,0x4
+        add esp, 0x4
 
         popad
 
-        mov esi,dword ptr ds:[0x22AF6F8]
+        mov esi, dword ptr ds : [0x22AF6F8]
         jmp u0x59EC8E
     }
 }
@@ -606,63 +640,96 @@ void __declspec(naked) naked_0x5F1E10()
     {
         pushad
 
-        movzx eax,word ptr [esp+0x24]
+        movzx eax, word ptr[esp + 0x24]
 
         // --- Roulette / Reward Item / Teleport (game phase) ---
-        cmp eax,0x834
+        cmp eax, 0x834
         je roulette_packet
-        cmp eax,0x835
+        cmp eax, 0x835
         je roulette_packet
-        cmp eax,0x836
+        cmp eax, 0x836
         je roulette_packet
-        cmp eax,0x1F01
+        cmp eax, 0x1F01
         je reward_item_packet
-        cmp eax,0x1F03
+        cmp eax, 0x1F03
         je reward_item_packet
-        cmp eax,0x1F04
+        cmp eax, 0x1F04
         je reward_item_packet
-        cmp eax,0x1F05
+        cmp eax, 0x1F05
         je reward_item_packet
-        cmp eax,0x1F06
+        cmp eax, 0x1F06
         je reward_item_packet
-        cmp eax,0x838
+        cmp eax, 0x838
         je teleport_packet
-        cmp eax,0x839
+        cmp eax, 0x839
         je teleport_packet
+        cmp eax, 0x83B
+        je weapon_skin_packet
+        cmp eax, 0x83C
+        je weapon_skin_wl_packet
+        cmp eax, 0x83D
+        je weapon_skin_deny_packet
         popad
-        mov edx,dword ptr [esp+0x4]
-        movzx eax,dx
+        mov edx, dword ptr[esp + 0x4]
+        movzx eax, dx
         jmp u0x5F1E17
 
-        roulette_packet:
-        mov ecx,dword ptr [esp+0x28]
-        push ecx
-        push eax
-        call packet::handle_roulette_dispatch
-        add esp,0x8
+        roulette_packet :
+        mov ecx, dword ptr[esp + 0x28]
+            push ecx
+            push eax
+            call packet::handle_roulette_dispatch
+            add esp, 0x8
 
-        popad
-        ret
+            popad
+            ret
 
-        reward_item_packet:
-        mov ecx,dword ptr [esp+0x28]
-        push ecx
-        push eax
-        call packet::handle_reward_item_dispatch
-        add esp,0x8
+            reward_item_packet :
+        mov ecx, dword ptr[esp + 0x28]
+            push ecx
+            push eax
+            call packet::handle_reward_item_dispatch
+            add esp, 0x8
 
-        popad
-        ret
+            popad
+            ret
 
-        teleport_packet:
-        mov ecx,dword ptr [esp+0x28]
-        push ecx
-        push eax
-        call packet::handle_teleport_dispatch
-        add esp,0x8
+            teleport_packet :
+        mov ecx, dword ptr[esp + 0x28]
+            push ecx
+            push eax
+            call packet::handle_teleport_dispatch
+            add esp, 0x8
 
-        popad
-        ret
+            popad
+            ret
+
+            weapon_skin_packet :
+        mov ecx, dword ptr[esp + 0x28]
+            push ecx
+            call packet::handle_weapon_skin_dispatch
+            add esp, 0x4
+
+            popad
+            ret
+
+            weapon_skin_wl_packet :
+        mov ecx, dword ptr[esp + 0x28]
+            push ecx
+            call packet::handle_weapon_skin_whitelist_dispatch
+            add esp, 0x4
+
+            popad
+            ret
+
+            weapon_skin_deny_packet :
+        mov ecx, dword ptr[esp + 0x28]
+            push ecx
+            call packet::handle_weapon_skin_deny_dispatch
+            add esp, 0x4
+
+            popad
+            ret
     }
 }
 
@@ -724,14 +791,14 @@ void __declspec(naked) naked_0x5EC5D5()
         call wait_sah_token_3s              // blocca finché g_sah_token_ready
         call shaiya::CNetwork::ComputeToken // EAX = auth_token (cdecl, no args)
         mov  ecx, eax                       // salva auth_token in ECX
-        mov  edx, dword ptr [esp + 20]      // EDX = &buf (originale prima di pushad)
-        mov  dword ptr [edx + 131], ecx     // auth_token → buf[131..134]
+        mov  edx, dword ptr[esp + 20]      // EDX = &buf (originale prima di pushad)
+        mov  dword ptr[edx + 131], ecx     // auth_token → buf[131..134]
         // sah_token (8 byte) → buf[135..142]
         lea  edi, [edx + 135]
-        mov  eax, dword ptr [g_sah_token]
-        mov  dword ptr [edi], eax
-        mov  eax, dword ptr [g_sah_token + 4]
-        mov  dword ptr [edi + 4], eax
+        mov  eax, dword ptr[g_sah_token]
+        mov  dword ptr[edi], eax
+        mov  eax, dword ptr[g_sah_token + 4]
+        mov  dword ptr[edi + 4], eax
         // hwid + tamper_flags + hwid_sig → buf[143..239]
         push edx
         call append_security_data

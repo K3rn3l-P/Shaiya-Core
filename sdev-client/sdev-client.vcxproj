@@ -145,6 +145,8 @@
     <ClCompile Include="src\imgui_layer_settings.cpp" />
     <ClCompile Include="src\imgui_layer_teleport.cpp" />
     <ClCompile Include="src\item_icon.cpp" />
+    <ClCompile Include="src\itemmall.cpp" />
+    <ClCompile Include="src\weapon_skin.cpp" />
     <ClCompile Include="src\name_color.cpp" />
     <ClCompile Include="src\patch.cpp" />
     <ClCompile Include="src\main.cpp" />

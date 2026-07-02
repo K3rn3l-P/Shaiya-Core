@@ -1,6 +1,7 @@
 #include <util/util.h>
 #include "include/main.h"
 #include "include/security_logger.h"
+#include "include/weapon_skin_db.h"
 #include "include/shaiya/Configuration.h"
 #include "include/shaiya/CUser.h"
 #include "include/shaiya/Synergy.h"
@@ -11,6 +12,7 @@ void user_leave_world_hook(CUser* user)
     security_logger::log("server", user->username.data(), "PLAYER_LEAVE_WORLD", nullptr);
     security_logger::invalidate_session(user->username.data());
     g_itemSetSynergies.erase(user->id);
+    weapon_skin::on_player_leave(user);   // rilascia il lock dell'arma-skin
 }
 
 /// <summary>
@@ -98,6 +100,7 @@ void Main()
     Configuration::LoadTeleportDestinations();
     Configuration::LoadEtainShield();
     security_logger::init();  // worker thread ODBC — avvia dopo config, prima degli hook IOCP
+    weapon_skin_db::init();   // worker thread ODBC persistenza weapon skin (PS_GameData)
 
     // CUser::CUser
     util::detour((void*)0x455165, naked_0x455165, 6);

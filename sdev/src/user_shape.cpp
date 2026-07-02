@@ -1,4 +1,7 @@
 #include <ranges>
+#include <windows.h>
+#include <cstdint>
+#include <cstring>
 #include <util/util.h>
 #include <shaiya/include/common/ItemSlot.h>
 #include <shaiya/include/common/PartyTypes.h>
@@ -132,6 +135,14 @@ namespace user_shape
                 outgoing.equipment[slot].enchantStep = CItem::GetEnchantStep(item);
             }
 
+            // Weapon skin: sostituisce l'aspetto dell'arma (slot 5) con la skin
+            // se settata. Stat reali invariate (qui è solo l'aspetto broadcast).
+            if (const auto* skin = weapon_skin::get(user))
+            {
+                outgoing.equipment[ItemSlot::Weapon].type = skin->type;
+                outgoing.equipment[ItemSlot::Weapon].typeId = skin->typeId;
+            }
+
             outgoing.charName = user->charName;
             int length = sizeof(GameGetInfoUserShapeOutgoing_EP6_4);
 
@@ -183,7 +194,7 @@ namespace user_shape
             }
             else
             {
-                std::memcpy(outgoing.cloakInfo.data(), 
+                std::memcpy(outgoing.cloakInfo.data(),
                     user->clone->guildName.data(), user->clone->guildName.size());
             }
 
@@ -217,6 +228,14 @@ namespace user_shape
                 outgoing.equipment[slot].type = item->type;
                 outgoing.equipment[slot].typeId = item->typeId;
                 outgoing.equipment[slot].enchantStep = CItem::GetEnchantStep(item);
+            }
+
+            // Weapon skin: sostituisce l'aspetto dell'arma (slot 5) con la skin
+            // se settata. Stat reali invariate (qui è solo l'aspetto broadcast).
+            if (const auto* skin = weapon_skin::get(user))
+            {
+                outgoing.equipment[ItemSlot::Weapon].type = skin->type;
+                outgoing.equipment[ItemSlot::Weapon].typeId = skin->typeId;
             }
 
             outgoing.charName = user->charName;
@@ -280,7 +299,7 @@ void __declspec(naked) naked_0x426948()
     __asm
     {
         pushad
-        
+
         push ebp // target
         push ebx // user
         call user_shape::send_user_0x303
@@ -305,7 +324,7 @@ void __declspec(naked) naked_0x491B13()
         push ebp // user
         call user_shape::send_zone_0x303
         add esp,0x4
-        
+
         popad
 
         jmp u0x491EBF
@@ -323,7 +342,7 @@ void __declspec(naked) naked_0x45A365()
         push edi // user
         call user_shape::init_clone
         add esp,0x8
-        
+
         popad
 
         jmp u0x45A246
@@ -343,7 +362,7 @@ void __declspec(naked) naked_0x491490()
         push ecx // user
         call user_shape::send_zone_0x51D
         add esp,0x8
-        
+
         popad
 
         jmp u0x4914A9
@@ -362,7 +381,7 @@ void __declspec(naked) naked_0x42A56C()
         push ebx // target
         call user_shape::send_user_0x51D
         add esp,0xC
-        
+
         popad
 
         jmp u0x42A57E
@@ -398,10 +417,10 @@ void __declspec(naked) naked_0x4263AD()
         without_vehicle:
 
         lea ecx,[esp+0x38]
-        push 0xF // length
-        push ecx // packet
+            push 0xF // length
+            push ecx // packet
 
-        jmp u0x4263B8
+            jmp u0x4263B8
     }
 }
 
@@ -417,8 +436,84 @@ void __declspec(naked) naked_0x411B1F()
     }
 }
 
+// ---------------------------------------------------------------------------
+// Weapon skin nel broadcast equip alla zona (FUN_00492c00 = invio 0x507
+// appearance-slot): legge item->type/typeId (item+0x40/0x41) per costruire il
+// pacchetto. __thiscall(CUser* user, int slot), RET 4. Chiamato da TUTTI i path
+// che cambiano un equip visibile (equip/unequip/gem/repair...). Per il weapon
+// slot, se il user ha una skin, scambia temporaneamente type/typeId dell'item
+// con la skin → gli osservatori vedono la skin subito anche al CAMBIO ARMA (il
+// pacchetto 0x303 copre solo i reshape, non il singolo 0x507). Ripristina dopo
+// l'invio (stat/dati item invariati). Il bug "invisibile in corsa" NON era
+// causato da qui: era incompatibilità categoria-arma/classe della skin scelta.
+// ---------------------------------------------------------------------------
+namespace
+{
+    constexpr uintptr_t kFunSendEquipView = 0x492C00;
+
+    typedef void(__thiscall* SendEquipViewFn)(void* user, int slot);
+    SendEquipViewFn g_origSendEquipView = nullptr;
+
+    void __fastcall hook_send_equip_view(void* user, void* /*edx*/, int slot)
+    {
+        uint8_t savedType = 0, savedTypeId = 0;
+        int item = 0;
+        bool swapped = false;
+
+        if (slot == ItemSlot::Weapon && user)
+        {
+            const auto* skin = weapon_skin::get(reinterpret_cast<CUser*>(user));
+            if (skin)
+            {
+                item = *reinterpret_cast<int*>(reinterpret_cast<char*>(user) + 0x1C0 + slot * 4);
+                if (item)
+                {
+                    auto* pType   = reinterpret_cast<uint8_t*>(item + 0x40);
+                    auto* pTypeId = reinterpret_cast<uint8_t*>(item + 0x41);
+                    savedType   = *pType;
+                    savedTypeId = *pTypeId;
+                    *pType   = skin->type;
+                    *pTypeId = skin->typeId;
+                    swapped = true;
+                }
+            }
+        }
+
+        g_origSendEquipView(user, slot);
+
+        if (swapped)
+        {
+            *reinterpret_cast<uint8_t*>(item + 0x40) = savedType;
+            *reinterpret_cast<uint8_t*>(item + 0x41) = savedTypeId;
+        }
+    }
+
+    void build_send_equip_trampoline()
+    {
+        auto* tramp = static_cast<BYTE*>(VirtualAlloc(
+            nullptr, 16, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE));
+        if (!tramp)
+            return;
+
+        // Displaced: SUB ESP,0x14 (3) + MOV EAX,[0x57f7c4] (5) = 8 byte → 0x492c08.
+        std::memcpy(tramp, reinterpret_cast<void*>(kFunSendEquipView), 8);
+        tramp[8] = 0xE9; // jmp rel32
+        auto rel = static_cast<int32_t>((kFunSendEquipView + 8) -
+            (reinterpret_cast<uintptr_t>(tramp) + 13));
+        std::memcpy(tramp + 9, &rel, 4);
+
+        g_origSendEquipView = reinterpret_cast<SendEquipViewFn>(tramp);
+    }
+}
+
 void hook::user_shape()
 {
+    // Weapon skin nel broadcast equip 0x507 (gli osservatori vedono la skin anche
+    // al cambio arma, non solo ai reshape 0x303)
+    build_send_equip_trampoline();
+    if (g_origSendEquipView)
+        util::detour((void*)kFunSendEquipView, hook_send_equip_view, 8);
+
     // CZone::SendUserShape
     util::detour((void*)0x426948, naked_0x426948, 7);
     // CUser::SendUserShape

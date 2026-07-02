@@ -134,6 +134,14 @@ static void on_user_enter_world(CUser* user)
         RewardItemEvent::send(user);
     if (Configuration::RouletteEnabled)
         roulette::send_list(user);
+
+    // Push della whitelist skin (autorità server) → il client non necessita di file locale.
+    weapon_skin::send_whitelist(user);
+
+    // Persistenza: carica + RIVALIDA la skin salvata per questo charId e la riapplica
+    // (osservatori via shape/g_skins, player locale via 0x83B). Validazione centralizzata
+    // in weapon_skin (DB trattato come non fidato).
+    weapon_skin::load_persisted(user);
 }
 
 void __declspec(naked) naked_0x47BDA2()

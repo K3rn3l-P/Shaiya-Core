@@ -280,6 +280,23 @@ namespace window
             return 0;
         }
 
+        if (msg == kClientWeaponSkinMsg)
+        {
+            // Inviato dal window proc (contesto rete corretto), come teleport.
+            // Payload = [opcode][type][typeId]; CNetwork::Send antepone la size.
+            // Opcode 0x83A: gruppo 0x8xx → sub-dispatcher 0x479f90 (opcode>=0x80B
+            // cade nel default 0x47A040 = packet_gem::handler), come il teleport
+            // 0x839. Gli opcode 0x0A0x sono scartati dal router top-level del server.
+#pragma pack(push, 1)
+            struct { uint16_t opcode; uint8_t type; uint8_t typeId; } pkt;
+#pragma pack(pop)
+            pkt.opcode = 0x83A;
+            pkt.type   = static_cast<uint8_t>(wParam);
+            pkt.typeId = static_cast<uint8_t>(lParam);
+            CNetwork::Send(&pkt, sizeof(pkt));
+            return 0;
+        }
+
         if (g_hwndIsUnicode)
             return CallWindowProcW(g_originalGameWndProc, hwnd, msg, wParam, lParam);
 

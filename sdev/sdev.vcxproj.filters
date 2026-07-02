@@ -39,6 +39,12 @@
     <ClCompile Include="src\user_shape.cpp">
       <Filter>src</Filter>
     </ClCompile>
+    <ClCompile Include="src\weapon_skin.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\weapon_skin_db.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
     <ClCompile Include="src\packet_character.cpp">
       <Filter>src</Filter>
     </ClCompile>

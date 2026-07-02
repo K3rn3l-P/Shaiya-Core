@@ -20,7 +20,8 @@ inline constexpr unsigned kClientEmojiTokenWindowMessage = 0x8000 + 0x4A5;
 inline constexpr unsigned kClientGMCommandWindowMessage = 0x8000 + 0x4A6;
 inline constexpr unsigned kClientTeleportListWindowMessage = 0x8000 + 0x4A7;
 inline constexpr unsigned kClientTeleportMoveWindowMessage = 0x8000 + 0x4A8;
-inline constexpr unsigned kClientTamperReportMsg          = 0x8000 + 0x4A9;
+inline constexpr unsigned kClientTamperReportMsg = 0x8000 + 0x4A9;
+inline constexpr unsigned kClientWeaponSkinMsg = 0x8000 + 0x4AA;
 void queue_client_sysmsg(int chatType, int messageNumber);
 void flush_client_sysmsg_queue();
 void tick_client_welcome_sysmsg();
@@ -39,6 +40,11 @@ bool is_custom_eft_loop_enabled_from_ui();
 unsigned get_custom_eft_loop_interval_from_ui();
 const char* get_custom_eft_name_from_ui();
 
+// Reset del guard "box skin gia disegnato" — chiamare 1 volta per frame dall'imgui layer,
+// PRIMA del render nativo del frame successivo. Il box skin viene disegnato nel render
+// nativo dell'inventario (item_icon.cpp) per rispettare lo z-order delle finestre native.
+void skin_box_frame_reset();
+
 namespace hook
 {
     void compute_game_hash();   // SHA256(.text) PRIMA dei detour — chiamare per primo in Main()
@@ -49,6 +55,7 @@ namespace hook
     void command();
     void imgui_layer();
     void item_icon();
+    void itemmall();            // item-mall preview: mount + weapon skin (client-only)
     void map_editor();
     void name_color();
     void packet();
@@ -57,6 +64,7 @@ namespace hook
     void raid();
     void select_screen();
     void title();
+    void weapon_skin();         // render locale weapon skin (override modello arma)
     void unicode();
     void vehicle();
     void window();
@@ -110,6 +118,34 @@ namespace auto_login
 
 // Chiamata dall'hook ASM del send 0xA101 (packet.cpp) per ripristinare i patch.
 extern "C" void auto_login_after_send();
+
+namespace weapon_skin
+{
+    // Store client-side della skin attiva (ricevuta dal server via 0x0A03).
+    bool is_set();
+    uint8_t skin_type();
+    uint8_t skin_type_id();
+    void set_local(uint8_t type, uint8_t typeId);
+    // Applica il modello arma locale: type!=0 imposta la skin (persistente in type[5]),
+    // type==0 ripristina l'arma reale memorizzata. NON invia nulla al server.
+    void apply_local_visual(uint8_t type, uint8_t typeId);
+    // Invia la richiesta skin al server (server-authoritative). Il server valida; se
+    // rifiuta risponde 0x83D → il client mostra "Cannot equip".
+    void request_set(uint8_t type, uint8_t typeId);
+    void request_clear();
+    void draw_skin_slot();   // INPUT del box skin (drag-to-set, right-click clear, hint) — imgui, ogni frame
+    // Geometria screen-space del box skin (bx,by,sz). false = inventario chiuso/non pronto.
+    // Condivisa tra input imgui (draw_skin_slot) e render nativo (draw_skin_slot_native).
+    bool skin_slot_geometry(float* outBx, float* outBy, float* outSz);
+
+    // Whitelist skin dal server (0x83C, enter-world). Contiene TUTTE le skin; `usable`
+    // dice se il personaggio locale può equipaggiarla. Nessun WeaponSkins.ini client.
+    void set_allowed_skins_from_server(const uint8_t* triples, int count);
+    bool is_allowed_skin(uint8_t type, uint8_t typeId);
+    bool is_usable_skin(uint8_t type, uint8_t typeId);
+    int  allowed_skin_count();
+    bool allowed_skin_get(int index, uint8_t* outType, uint8_t* outTypeId, bool* outUsable);
+}
 
 namespace name_color
 {

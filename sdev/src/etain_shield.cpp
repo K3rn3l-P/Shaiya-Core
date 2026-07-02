@@ -603,8 +603,11 @@ namespace etain_shield
     // >=1 → blocca (account/character bound). Null-guard completo.
     bool block_bound_item(void* item)
     {
-        if (!g_etainConfig.blockBoundItems) return false;
         if (!item) return false;
+        // Weapon skin lock (B): l'arma-istanza in uso come skin non è droppabile/
+        // vendibile/tradabile. Indipendente dal toggle anti-dupe.
+        if (weapon_skin::is_item_locked(item)) return true;
+        if (!g_etainConfig.blockBoundItems) return false;
         void* info = *reinterpret_cast<void**>(reinterpret_cast<char*>(item) + 0x30);
         if (!info) return false;
         return *reinterpret_cast<uint8_t*>(reinterpret_cast<char*>(info) + 0x31) >= 1;

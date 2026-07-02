@@ -18,7 +18,7 @@
 using namespace shaiya;
 
 // ---------------------------------------------------------------------------
-// F7 Custom GM Panel — preserves custom features across upstream merges
+// F7 Custom GM Panel - preserves custom features across upstream merges
 // 
 // Includes:
 // - EFT Browser: search and play custom .eft files from data.sah
@@ -601,7 +601,29 @@ namespace custom_gm_panel
         sprintf_s(command, "/getitem %d %d 1", type, typeId);
         SendMessageA(g_var->hwnd, kClientGMCommandWindowMessage, 0, reinterpret_cast<LPARAM>(command));
     }
+    
+    static void send_wskin_to_chat(int type, int typeId)
+    {
+        ensure_client_sysmsg_dispatch_ready();
+        if (!g_var->hwnd || !IsWindow(g_var->hwnd))
+            return;
 
+        char command[64]{};
+        sprintf_s(command, "/wskin %d %d", type, typeId);
+        SendMessageA(g_var->hwnd, kClientGMCommandWindowMessage, 0, reinterpret_cast<LPARAM>(command));
+    }
+
+    static void send_wskin_off()
+    {
+        ensure_client_sysmsg_dispatch_ready();
+        if (!g_var->hwnd || !IsWindow(g_var->hwnd))
+            return;
+
+        char command[16]{};
+        sprintf_s(command, "/wskin off");
+        SendMessageA(g_var->hwnd, kClientGMCommandWindowMessage, 0, reinterpret_cast<LPARAM>(command));
+    }
+    
     static void ensure_item_catalog_loaded()
     {
         if (g_itemCatalogLoaded)
@@ -903,6 +925,107 @@ namespace custom_gm_panel
     }
 
     // -----------------------------------------------------------------------
+    // Weapon Skin browser
+    //   Mostra SOLO le skin consentite dal server (filtrate per classe, weapon_skin::allowed_*).
+    //   Click su una riga = invia "/wskin <type> <typeId>" (stesso path nativo
+    //   di /getitem). La skin override il modello arma locale mantenendo le stat
+    //   dell'arma vera (render hook FUN_004156E0).
+    // -----------------------------------------------------------------------
+    static std::array<char, 128> g_skinSearch{};
+
+    static void draw_weapon_skin()
+    {
+        // Current skin state
+        if (weapon_skin::is_set())
+        {
+            ImGui::TextColored(ImVec4(0.31f, 0.63f, 1.0f, 1.0f),
+                "Active skin: type %u  typeId %u",
+                weapon_skin::skin_type(), weapon_skin::skin_type_id());
+        }
+        else
+        {
+            ImGui::TextDisabled("No active skin (real weapon model).");
+        }
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Remove skin##wskin_off"))
+            send_wskin_off();
+
+        ImGui::Separator();
+        ImGui::InputTextWithHint("##wskin_search", "Search skin by Name / type / typeId...",
+            g_skinSearch.data(), g_skinSearch.size());
+
+        auto search = to_lower_ascii(g_skinSearch.data());
+
+        int total = weapon_skin::allowed_skin_count();
+        ImGui::TextDisabled("Allowed skins: %d  (server, filtered by class)", total);
+
+        ImGui::Separator();
+        ImGui::BeginChild("wskin_list", ImVec2(0.0f, 0.0f), true);
+
+        if (total == 0)
+        {
+            ImGui::TextDisabled("No skins available for your class.");
+            ImGui::EndChild();
+            return;
+        }
+
+        int shown = 0;
+        for (int i = 0; i < total; ++i)
+        {
+            uint8_t type = 0, typeId = 0;
+            bool usable = false;
+            if (!weapon_skin::allowed_skin_get(i, &type, &typeId, &usable))
+                continue;
+
+            auto* info = CDataFile::GetItemInfo(type, typeId);
+            std::string name = (info && info->name) ? info->name : "(?)";
+
+            // filtro ricerca: nome / type / typeId
+            if (!search.empty())
+            {
+                std::string hay = to_lower_ascii(name)
+                    + " " + std::to_string(type) + " " + std::to_string(typeId);
+                if (hay.find(search) == std::string::npos)
+                    continue;
+            }
+
+            bool active = weapon_skin::is_set()
+                && weapon_skin::skin_type() == type
+                && weapon_skin::skin_type_id() == typeId;
+
+            auto label = name
+                + "  |  " + std::to_string(type) + ":" + std::to_string(typeId)
+                + (active ? "   [ACTIVE]" : usable ? "" : "   [wrong class]")
+                + "##wskin_" + std::to_string(type) + "_" + std::to_string(typeId);
+
+            // Verde = equipaggiabile dal personaggio; rosso = classe/fazione errata
+            // (il server la rifiuterebbe â†’ "Cannot equip"). Admin vede comunque tutte.
+            ImVec4 color = usable ? ImVec4(0.55f, 1.0f, 0.55f, 1.0f)
+                                  : ImVec4(1.0f, 0.45f, 0.45f, 1.0f);
+            ImGui::PushStyleColor(ImGuiCol_Text, color);
+            bool clicked = ImGui::Selectable(label.c_str(), active);
+            ImGui::PopStyleColor();
+            if (clicked)
+                send_wskin_to_chat(type, typeId);
+
+            if (ImGui::IsItemHovered())
+            {
+                ImGui::SetTooltip(
+                    "Name: %s\nType: %d\nTypeID: %d\n%s\nClick: /wskin %d %d",
+                    name.c_str(), type, typeId,
+                    usable ? "Equippable by your class" : "NOT for your class (server will deny)",
+                    type, typeId);
+            }
+            ++shown;
+        }
+
+        if (shown == 0)
+            ImGui::TextDisabled("No skin matches the search.");
+
+        ImGui::EndChild();
+    }
+
+    // -----------------------------------------------------------------------
     // Screen Coordinate Capture
     // -----------------------------------------------------------------------
     struct ScreenPointEntry
@@ -1094,6 +1217,12 @@ namespace custom_gm_panel
                     if (ImGui::BeginTabItem("Item Search"))
                     {
                         draw_item_search();
+                        ImGui::EndTabItem();
+                    }
+
+                    if (ImGui::BeginTabItem("Weapon Skin"))
+                    {
+                        draw_weapon_skin();
                         ImGui::EndTabItem();
                     }
 

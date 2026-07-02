@@ -318,6 +318,82 @@ namespace
     }
 
     // -----------------------------------------------------------------------
+    // Texture 1x1 bianca (per tinte/overlay a colore pieno). Creata una volta.
+    // -----------------------------------------------------------------------
+    LPDIRECT3DTEXTURE9 g_whiteTex = nullptr;
+    bool g_whiteTexTried = false;
+
+    LPDIRECT3DTEXTURE9 ensure_white_texture(LPDIRECT3DDEVICE9 device)
+    {
+        if (g_whiteTex || g_whiteTexTried)
+            return g_whiteTex;
+        g_whiteTexTried = true;
+        if (!device)
+            return nullptr;
+        LPDIRECT3DTEXTURE9 tex = nullptr;
+        if (FAILED(device->CreateTexture(1, 1, 1, 0, D3DFMT_A8R8G8B8,
+                D3DPOOL_MANAGED, &tex, nullptr)) || !tex)
+            return nullptr;
+        D3DLOCKED_RECT lr{};
+        if (SUCCEEDED(tex->LockRect(0, &lr, nullptr, 0)))
+        {
+            *static_cast<DWORD*>(lr.pBits) = 0xFFFFFFFF;
+            tex->UnlockRect(0);
+        }
+        g_whiteTex = tex;
+        return g_whiteTex;
+    }
+
+    // Overlay "lock" sull'arma usata come weapon skin (bloccata da drop/trade lato
+    // server). Glow dorato semitrasparente + cornice → il giocatore vede quale item
+    // è la sua skin attiva (e non prova a buttarla). Il blocco server è la sicurezza;
+    // questo è solo feedback visivo.
+    void draw_skin_lock_overlay(CItem* item, long x, long y)
+    {
+        if (!item || !weapon_skin::is_set())
+            return;
+        if (item->type != weapon_skin::skin_type() || item->typeId != weapon_skin::skin_type_id())
+            return;
+
+        auto* device = g_var ? g_var->camera.device : nullptr;
+        auto* wtex = ensure_white_texture(device);
+        if (!wtex)
+            return;
+
+        const float sz = static_cast<float>(kLargeItemIconSize);
+        const float fx = static_cast<float>(x);
+        const float fy = static_cast<float>(y);
+
+        // ---------------------------------------------------------------------
+        // TUNING TRASPARENZA — leggere qui per regolare l'effetto "selezionata".
+        //
+        // I colori sono ARGB a 32 bit: 0xAARRGGBB
+        //   AA = alpha (trasparenza): 0x00 = invisibile, 0xFF = pieno/opaco
+        //   RR GG BB = colore (FFD700 = oro). NON toccare RRGGBB, cambia solo AA.
+        //
+        // PIÙ BASSO l'alpha = PIÙ TRASPARENTE (icona meno "coperta" dall'oro).
+        // Modifica solo i due valori qui sotto e ricompila per fare le prove.
+        //
+        // Riferimenti alpha rapidi (su 255):
+        //   0x20 = ~12%  (molto trasparente, oro appena accennato)
+        //   0x30 = ~19%
+        //   0x40 = ~25%  ← valore di partenza glow (più trasparente di prima 0x55)
+        //   0x55 = ~33%  (vecchio valore, più marcato)
+        //   0x80 = ~50%
+        // ---------------------------------------------------------------------
+        constexpr D3DCOLOR kSkinGlowColor  = 0x40FFD700; // doratura su TUTTA l'icona (alza/abbassa 0x40)
+        constexpr D3DCOLOR kSkinFrameColor = 0xB0FFD700; // cornice/bordo (0xFF = pieno, abbassa per bordo più tenue)
+
+        // Glow dorato leggero su tutta l'icona (effetto "selezionata" trasparente).
+        draw_texture(wtex, fx, fy, sz, sz, kSkinGlowColor);
+        // Cornice dorata (4 lati sottili) per marcare chiaramente il "lock".
+        draw_texture(wtex, fx,          fy,          sz,   1.0f, kSkinFrameColor);
+        draw_texture(wtex, fx,          fy + sz-1.0f, sz,   1.0f, kSkinFrameColor);
+        draw_texture(wtex, fx,          fy,          1.0f, sz,   kSkinFrameColor);
+        draw_texture(wtex, fx + sz-1.0f, fy,          1.0f, sz,   kSkinFrameColor);
+    }
+
+    // -----------------------------------------------------------------------
     // Element badge drawing
     // -----------------------------------------------------------------------
     void draw_element_badge(Attribute attr, long x, long y, int itemIconSize)
@@ -375,6 +451,61 @@ void draw_item_icon(void* unknown, CItem* item, long x, long y, D3DCOLOR color)
     (*(LPFN)0x4B7240)(unknown, color, x, y, item->type, item->typeId, item->count, false, true);
 
     draw_element_overlay_for_item(item, x, y);
+    draw_skin_lock_overlay(item, x, y);   // marca l'arma-skin attiva (lock visivo)
+}
+
+// ===========================================================================
+// Box skin — render NATIVO dentro il pass dell'inventario (z-order corretto)
+// ---------------------------------------------------------------------------
+// Perché qui e non in imgui: ImGui::GetForegroundDrawList() disegna SEMPRE sopra
+// ogni finestra nativa. Disegnando invece DURANTE il render dell'inventario, le
+// finestre di gioco aperte SOPRA l'inventario (che il gioco disegna dopo) coprono
+// correttamente il box (quads screen-space, ZENABLE off → z = ordine di draw).
+// Stesso principio delle HP bar spostate sul render loop DX9.
+// ===========================================================================
+
+// Guard: disegna il box UNA sola volta per frame anche se l'hook per-cella scatta
+// N volte. Reset da skin_box_frame_reset() (imgui layer, 1×/frame, DOPO il render
+// nativo). Prima cella del frame → box non ancora disegnato → disegna e marca.
+static bool g_skinBoxDrawnThisFrame = false;
+
+void skin_box_frame_reset() { g_skinBoxDrawnThisFrame = false; }
+
+// ctx = contesto UI della cella ([esi+0x30] nell'hook) — stesso helper usato per
+// disegnare le icone native dell'inventario (0x4B7240).
+void draw_skin_slot_native(void* ctx)
+{
+    if (g_skinBoxDrawnThisFrame)
+        return;                                  // già disegnato questo frame
+    float bx, by, sz;
+    if (!weapon_skin::skin_slot_geometry(&bx, &by, &sz))
+        return;                                  // inventario chiuso/non pronto
+    g_skinBoxDrawnThisFrame = true;
+
+    auto* device = g_var ? g_var->camera.device : nullptr;
+    auto* wtex = ensure_white_texture(device);
+
+    // Sfondo scuro semitrasparente del box (ARGB: alpha 0x96 ≈ 59%).
+    if (wtex)
+        draw_texture(wtex, bx, by, sz, sz, 0x96000000);
+
+    // Icona reale dell'arma-skin attiva (renderer atlas nativo, come le celle).
+    if (weapon_skin::is_set() && ctx)
+    {
+        typedef void(__thiscall* LPFN)(void*, D3DCOLOR, long, long, int, int, int, bool, bool);
+        (*(LPFN)0x4B7240)(ctx, 0xFFFFFFFF, static_cast<long>(bx), static_cast<long>(by),
+            weapon_skin::skin_type(), weapon_skin::skin_type_id(), 0, false, true);
+    }
+
+    // Bordo (4 lati, spessore 2): blu se skin attiva, grigio se box vuoto.
+    if (wtex)
+    {
+        const D3DCOLOR border = weapon_skin::is_set() ? 0xFF50A0FF : 0xC8969696;
+        draw_texture(wtex, bx,           by,            sz,   2.0f, border);
+        draw_texture(wtex, bx,           by + sz - 2.0f, sz,   2.0f, border);
+        draw_texture(wtex, bx,           by,            2.0f, sz,   border);
+        draw_texture(wtex, bx + sz - 2.0f, by,            2.0f, sz,   border);
+    }
 }
 
 // ===========================================================================
@@ -400,6 +531,13 @@ void __declspec(naked) naked_0x51826D()
         push ecx        // unknown
         call draw_item_icon
         add esp, 0x14
+
+        // Box skin nel MEDESIMO pass nativo → z-order corretto (coperto dalle
+        // finestre disegnate sopra l'inventario). ctx = [esi+0x30], guard 1×/frame.
+        lea ecx, [esi+0x30]
+        push ecx        // ctx UI cella
+        call draw_skin_slot_native
+        add esp, 0x4
 
         popad
         jmp u0x518287

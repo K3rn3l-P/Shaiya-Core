@@ -808,6 +808,10 @@ namespace imgui_layer
                     draw_reward_button_overlay();
                 draw_settings_button_overlay();
                 draw_npc_button_overlay();
+                // Reset guard box skin (il disegno vero è nel render nativo inventario);
+                // qui draw_skin_slot gestisce solo l'input (drag/right-click/hint).
+                skin_box_frame_reset();
+                weapon_skin::draw_skin_slot();
 
                 // Request the teleport destination list once per login.
                 if (!teleport_event::listReceived)

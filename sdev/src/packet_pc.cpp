@@ -215,6 +215,10 @@ namespace packet_pc
             etain_shield::kick_user(user);
     }
 
+    // Nota: weapon skin usa l'opcode 0x83A (gruppo 0x8xx) gestito in
+    // packet_gem::handler — gli opcode 0x0A0x sono scartati dal router top-level
+    // del server (categoria opcode&0xFF00 inesistente).
+
     /// <summary>
     /// EtainShield: validates 0x501 movement packet before the native handler.
     /// Returns 1 (allow) or 0 (drop).

@@ -1,3 +1,4 @@
+#include <cstdio>
 #include <random>
 #include <ranges>
 #include <string>
@@ -13,6 +14,7 @@
 #include <shaiya/include/network/game/outgoing/0800.h>
 #include <shaiya/include/network/gameLog/incoming/0400.h>
 #include "include/main.h"
+#include "include/security_logger.h"
 #include "include/shaiya/CGameData.h"
 #include "include/shaiya/CItem.h"
 #include "include/shaiya/CUser.h"
@@ -880,6 +882,12 @@ namespace packet_gem
             handler_0x833(user, reinterpret_cast<GameItemFreeSynthesisIncoming*>(packet));
             break;
         }
+        case 0x83A:
+        {
+            // Weapon skin apply/clear (client→server). command[0]=type, command[1]=typeId.
+            weapon_skin::apply(user, packet->command[0], packet->command[1]);
+            break;
+        }
         case 0x834:
         {
             roulette::send_list(user);
@@ -905,7 +913,6 @@ namespace packet_gem
         }
     }
 }
-
 unsigned u0x47A04B = 0x47A04B;
 void __declspec(naked) naked_0x47A040()
 {
