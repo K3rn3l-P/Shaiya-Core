@@ -62,6 +62,7 @@ namespace hook
     void patch();
     void quick_slot();
     void raid();
+    void recreation_viewer();   // allarga banda Y hover slot recreation (0x4C42BF, +0x20 -> +0x88)
     void select_screen();
     void title();
     void weapon_skin();         // render locale weapon skin (override modello arma)

@@ -17,6 +17,7 @@ void Main()
     hook::patch();
     hook::quick_slot();
     hook::raid();
+    hook::recreation_viewer();
     hook::select_screen();
     hook::title();
     hook::vehicle();
