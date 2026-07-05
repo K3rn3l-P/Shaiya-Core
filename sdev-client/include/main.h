@@ -138,6 +138,9 @@ namespace weapon_skin
     // Geometria screen-space del box skin (bx,by,sz). false = inventario chiuso/non pronto.
     // Condivisa tra input imgui (draw_skin_slot) e render nativo (draw_skin_slot_native).
     bool skin_slot_geometry(float* outBx, float* outBy, float* outSz);
+    // Contesto UI dell'inventario (window+0x30) per il renderer icona nativo (0x4B7240).
+    // nullptr se la finestra non è ancora stata catturata. Indipendente dalle celle item.
+    void* inventory_ui_ctx();
 
     // Whitelist skin dal server (0x83C, enter-world). Contiene TUTTE le skin; `usable`
     // dice se il personaggio locale può equipaggiarla. Nessun WeaponSkins.ini client.

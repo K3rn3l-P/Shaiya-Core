@@ -471,9 +471,11 @@ static bool g_skinBoxDrawnThisFrame = false;
 
 void skin_box_frame_reset() { g_skinBoxDrawnThisFrame = false; }
 
-// ctx = contesto UI della cella ([esi+0x30] nell'hook) — stesso helper usato per
-// disegnare le icone native dell'inventario (0x4B7240).
-void draw_skin_slot_native(void* ctx)
+// ctx = contesto UI dell'inventario (window+0x30), ricavato da weapon_skin::inventory_ui_ctx().
+// Indipendente dalle celle item → il box si disegna anche in un bag vuoto. Ancorato a un
+// punto per-frame di FUN_00518110 (naked_0x518751), NON al draw icona per-cella (che scatta
+// solo per celle con item, e in un bag vuoto non scattava mai → box invisibile).
+void draw_skin_slot_native()
 {
     if (g_skinBoxDrawnThisFrame)
         return;                                  // già disegnato questo frame
@@ -490,6 +492,7 @@ void draw_skin_slot_native(void* ctx)
         draw_texture(wtex, bx, by, sz, sz, 0x96000000);
 
     // Icona reale dell'arma-skin attiva (renderer atlas nativo, come le celle).
+    void* ctx = weapon_skin::inventory_ui_ctx();
     if (weapon_skin::is_set() && ctx)
     {
         typedef void(__thiscall* LPFN)(void*, D3DCOLOR, long, long, int, int, int, bool, bool);
@@ -532,13 +535,6 @@ void __declspec(naked) naked_0x51826D()
         call draw_item_icon
         add esp, 0x14
 
-        // Box skin nel MEDESIMO pass nativo → z-order corretto (coperto dalle
-        // finestre disegnate sopra l'inventario). ctx = [esi+0x30], guard 1×/frame.
-        lea ecx, [esi+0x30]
-        push ecx        // ctx UI cella
-        call draw_skin_slot_native
-        add esp, 0x4
-
         popad
         jmp u0x518287
     }
@@ -570,6 +566,27 @@ void __declspec(naked) naked_0x4FFCE3()
     }
 }
 
+// Box skin agganciato a un punto PER-FRAME di FUN_00518110 (render inventario), non al
+// draw icona per-cella: quel punto scattava solo per celle CON item, quindi in un bag
+// vuoto il box spariva. 0x518751 è dopo entrambi i loop celle e viene SEMPRE raggiunto
+// quando l'inventario è aperto (tutti i rami convergono qui). ctx = window+0x30, ricavato
+// in draw_skin_slot_native da g_invWindowPtr → nessuna dipendenza dalle celle.
+// Displaced: MOV EAX,[ESI+0x8] (3) + MOV ECX,[ESI+0x4] (3) = 6 byte → continua a 0x518757.
+unsigned u0x518757 = 0x518757;
+void __declspec(naked) naked_0x518751()
+{
+    __asm
+    {
+        pushad
+        call draw_skin_slot_native
+        popad
+
+        mov eax, dword ptr [esi+0x8]     // istruzioni displaced
+        mov ecx, dword ptr [esi+0x4]
+        jmp u0x518757
+    }
+}
+
 // ===========================================================================
 // hook::item_icon — public entry point
 // ===========================================================================
@@ -577,4 +594,6 @@ void hook::item_icon()
 {
     util::detour((void*)0x51826D, naked_0x51826D, 8);
     util::detour((void*)0x4FFCE3, naked_0x4FFCE3, 5);
+    // Box skin: render per-frame nel pass inventario (funziona anche a bag vuoto).
+    util::detour((void*)0x518751, naked_0x518751, 6);
 }

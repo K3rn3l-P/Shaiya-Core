@@ -435,6 +435,17 @@ namespace weapon_skin
         return true;
     }
 
+    // Contesto UI dell'inventario per il renderer icona nativo (0x4B7240): è window+0x30
+    // (stesso `LEA ECX,[ESI+0x30]` usato dal gioco per disegnare le celle in FUN_00518110).
+    // Ricavato dal solo puntatore-finestra → NON dipende dalle celle item, così il box
+    // skin si disegna anche in un bag vuoto.
+    void* inventory_ui_ctx()
+    {
+        if (!g_invWindowPtr)
+            return nullptr;
+        return reinterpret_cast<void*>(g_invWindowPtr + 0x30);
+    }
+
     // Box agganciato all'inventario (inven.png) — a sinistra dello slot weapon.
     // Chiamato ogni frame dall'imgui layer. Gestisce SOLO l'INPUT (drag-to-set,
     // right-click clear, hint). Il DISEGNO del box (sfondo/icona/bordo) è nel
