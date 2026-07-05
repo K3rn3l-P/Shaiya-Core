@@ -68,4 +68,5 @@ namespace hook
     void user_status();
     void world_thread();
     void connection_guard();
+    void command_manager();
 }

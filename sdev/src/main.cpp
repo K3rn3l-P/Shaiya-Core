@@ -135,6 +135,7 @@ void Main()
     hook::user_skill();
     hook::user_status();
     hook::world_thread();
+    hook::command_manager();
     Configuration::LoadItemSetData();
     Configuration::LoadItemSynthesis();
     if (Configuration::RewardBarEnabled)

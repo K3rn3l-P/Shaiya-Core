@@ -64,6 +64,7 @@
     <ClCompile Include="src\weapon_skin.cpp" />
     <ClCompile Include="src\weapon_skin_db.cpp" />
     <ClCompile Include="src\world_thread.cpp" />
+    <ClCompile Include="src\command_manager.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="include\extensions\filesystem.hpp" />

@@ -49,3 +49,8 @@ desktop.ini
 /SECURITY-PLAN-CT-PORT.md
 /SECURITY-PLAN-ETAINSHIELD.md
 /SECURITY-STRATEGY.md
+
+# ── Syncthing (il repo è in una share sync) ───────────
+*.sync-conflict-*
+.stfolder
+.stversions
