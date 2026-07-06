@@ -4068,6 +4068,14 @@ namespace imgui_layer {
 
     void draw_map_editor_panel()
     {
+        // Gate admin come gli altri pannelli GM (debug_panel F9, custom_gm_panel).
+        // Non-admin: F5 non togglea e il pannello resta forzato chiuso.
+        const bool isAdmin = g_pPlayerData && g_pPlayerData->isAdmin;
+        if (!isAdmin) {
+            g_showMapEditor = false;
+            return;
+        }
+
         if (ImGui::IsKeyPressed(ImGuiKey_F5, false))
             g_showMapEditor = !g_showMapEditor;
 
