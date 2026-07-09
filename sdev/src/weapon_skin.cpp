@@ -14,6 +14,7 @@
 #include <unordered_set>
 #include <unordered_map>
 #include <windows.h>
+#include <shaiya/include/common/ItemSlot.h>
 #include "include/main.h"
 #include "include/security_logger.h"
 #include "include/weapon_skin_db.h"
@@ -141,6 +142,22 @@ namespace weapon_skin
             uint8_t  typeId{};
         };
         #pragma pack(pop)
+
+        // Broadcast di zona della vista equip di uno slot (FUN_00492c00 → pacchetto 0x507),
+        // proprietario incluso. È DETOURATA da user_shape::hook_send_equip_view, che per il
+        // weapon slot sostituisce l'arma con la skin SE il giocatore ne ha una attiva.
+        //
+        // Serve richiamarla dopo ogni apply/clear della skin: il client, per il player
+        // locale, ricava l'arma REALE proprio da questo pacchetto. Con la skin attiva il
+        // pacchetto porta la skin, quindi il client non può conoscere l'arma reale da solo;
+        // al clear questo re-invio gli consegna l'arma reale e il modello torna corretto
+        // anche dopo un cambio arma avvenuto mentre la skin era attiva.
+        typedef void(__fastcall* SendEquipViewFn)(void* user, void* edx, int slot);
+
+        void send_weapon_equip_view(CUser* user)
+        {
+            reinterpret_cast<SendEquipViewFn>(0x492C00)(user, nullptr, ItemSlot::Weapon);
+        }
     }
 
     const Skin* get(CUser* user)
@@ -315,6 +332,17 @@ namespace weapon_skin
                 send_deny(user);   // 0x83D → "Cannot equip"
                 return;
             }
+            // Possesso-item obbligatorio: la skin si equipaggia SOLO se l'item skin è
+            // fisicamente in inventario (autorità server, anti-tamper: il client potrebbe
+            // inviare 0x83A senza possedere l'item). Coerente con "indossi = possiedi".
+            if (find_inventory_item_uid(user, type, typeId) == 0)
+            {
+                char dbg[64];
+                std::snprintf(dbg, sizeof(dbg), "DENY no-item type=%u typeId=%u", type, typeId);
+                security_logger::log("client", user->username.data(), "WSKIN", dbg);
+                send_deny(user);   // 0x83D → "Cannot equip"
+                return;
+            }
             set(user, type, typeId);
             lock_skin_source(user);                             // blocca l'arma-skin (no drop/sell/trade)
             weapon_skin_db::save(user->charId, type, typeId);   // persiste la skin
@@ -331,6 +359,10 @@ namespace weapon_skin
 
         CUser::SendUserShape(user);     // gli altri vedono la skin
         send_update(user);              // 0x83B → render locale
+        // 0x507 weapon slot: con skin = skin, senza skin = arma REALE. È l'unica fonte
+        // autoritativa dell'arma reale per il client → al clear ripristina il modello
+        // corretto anche dopo un cambio arma fatto con la skin attiva.
+        send_weapon_equip_view(user);
     }
 
     // Carica la skin persistita per il personaggio (enter-world) e la riapplica.
@@ -345,17 +377,28 @@ namespace weapon_skin
             return;
 
         uint8_t type = 0, typeId = 0;
-        if (!weapon_skin_db::load(user->charId, type, typeId) || type == 0)
-            return;   // nessuna skin salvata (o DB off/timeout → fail-safe)
+        bool haveSkin = weapon_skin_db::load(user->charId, type, typeId) && type != 0;
 
-        if (!is_allowed(type, typeId) || !usable_by(user, type, typeId))
+        if (haveSkin
+            && (!is_allowed(type, typeId)
+                || !usable_by(user, type, typeId)
+                || find_inventory_item_uid(user, type, typeId) == 0))
         {
-            weapon_skin_db::save(user->charId, 0, 0);   // pulisce skin non più valida
-            return;
+            // Skin non più valida (whitelist/flag classe cambiati, riga manomessa) o item
+            // skin non più posseduto → pulisce la persistenza e non applica nulla.
+            weapon_skin_db::save(user->charId, 0, 0);
+            haveSkin = false;
         }
 
-        set(user, type, typeId);
-        lock_skin_source(user);   // ri-blocca l'arma-skin al login
-        send_update(user);   // 0x83B → render locale; osservatori via shape (g_skins)
+        if (haveSkin)
+        {
+            set(user, type, typeId);
+            lock_skin_source(user);   // ri-blocca l'arma-skin al login
+        }
+
+        // Dichiara SEMPRE lo stato skin al client (0x83B), anche senza skin (type=0):
+        // clear esplicito all'enter-world → azzera lo stato client stale dopo un cambio
+        // personaggio (character screen senza chiudere il gioco). Osservatori via shape.
+        send_update(user);
     }
 }

@@ -86,6 +86,29 @@ namespace
     bool    g_realValid = false;
     bool    g_skinActive = false;
 
+    // charId del personaggio a cui appartiene lo stato skin qui sopra. Tutte le static di
+    // questo file vivono quanto il processo: al cambio personaggio in-game (character
+    // screen → altro char senza chiudere il gioco) resterebbero quelle del char
+    // precedente, che verrebbero scritte nel modello/globale del nuovo → arma sbagliata
+    // e invisibilità in corsa (l'arma non è impugnabile dalla nuova classe).
+    uint32_t g_stateCharId = 0;
+
+    // Risincronizza lo stato con il personaggio locale corrente: se il charId è cambiato,
+    // azzera TUTTO (skin attiva + arma reale memorizzata) prima che qualcuno lo usi.
+    // Va chiamata all'ingresso di OGNI path che legge/scrive lo stato (packet 0x83B,
+    // build del modello, equip-visual): il clear del server (0x83B type=0) arriva prima
+    // del primo build, e con g_realValid stale ripristinerebbe l'arma reale del char
+    // PRECEDENTE nel globale del nuovo. localId==0 (schermate senza char) → no-op.
+    void sync_local_char()
+    {
+        uint32_t localId = *reinterpret_cast<uint32_t*>(kLocalCharIdAddr);
+        if (localId == 0 || localId == g_stateCharId)
+            return;
+
+        weapon_skin::reset_state();
+        g_stateCharId = localId;
+    }
+
     uint8_t global_weapon_type() { return *reinterpret_cast<uint8_t*>(kGlobalEquipType + kWeaponSlot); }
     uint8_t global_weapon_typeId() { return *reinterpret_cast<uint8_t*>(kGlobalEquipTypeId + kWeaponSlot); }
 
@@ -122,6 +145,8 @@ namespace
     {
         g_origEquipVisual(packet); // il gioco scrive l'arma REALE in char+globale e builda
 
+        sync_local_char();   // cambio personaggio in-game → azzera lo stato skin stale
+
         if (!packet || !weapon_skin::is_set())
             return;
 
@@ -135,9 +160,18 @@ namespace
             // Il player locale ha equipaggiato una nuova arma REALE mentre la skin è
             // attiva: aggiorno l'arma reale memorizzata (per il restore al clear) e
             // ri-applico la skin su modello + globale, poi ricostruisco (no flicker).
-            g_realType = type;
-            g_realTypeId = p[8];
-            g_realValid = true;
+            //
+            // ATTENZIONE: con una skin attiva il server sostituisce l'arma con la SKIN
+            // anche in questo 0x507 (hook_send_equip_view, broadcast di zona che include
+            // il proprietario). Se memorizzassimo quel valore come "arma reale", al clear
+            // ripristineremmo la skin stessa → resta visibile finché non si cambia arma.
+            // Quindi: ignora la cattura quando il pacchetto porta esattamente la skin.
+            if (type != weapon_skin::skin_type() || p[8] != weapon_skin::skin_type_id())
+            {
+                g_realType = type;
+                g_realTypeId = p[8];
+                g_realValid = true;
+            }
             write_local_weapon(weapon_skin::skin_type(), weapon_skin::skin_type_id());
             rebuild_local_weapon_model();
         }
@@ -236,6 +270,8 @@ namespace
 
     void __fastcall hook_build_weapon_model(void* character)
     {
+        sync_local_char();   // cambio personaggio in-game → azzera lo stato skin stale
+
         // La skin va scritta in modo PERSISTENTE sia in CCharacter+0x1ad (modello) sia
         // nell'array GLOBALE 0x914489/0x91449A (animazione + ricopiatura in char ai
         // reload). FUN_004156E0 costruisce il MODELLO da type[5], ma la selezione
@@ -245,12 +281,15 @@ namespace
         // reali vengono dal server/inventario). Qui ri-applichiamo la skin ad ogni
         // rebuild (es. dopo un reload zona che ha ripristinato il globale all'arma reale),
         // ma solo se un'arma è effettivamente equipaggiata (globale weapon != 0).
-        if (character && weapon_skin::is_set())
+        if (character)
         {
             auto localId = *reinterpret_cast<uint32_t*>(kLocalCharIdAddr);
             auto charId = *reinterpret_cast<uint32_t*>(static_cast<char*>(character) + kCharIdOffset);
-            if (charId == localId && global_weapon_type() != 0)
+            if (charId == localId
+                && weapon_skin::is_set() && global_weapon_type() != 0)
+            {
                 write_local_weapon(weapon_skin::skin_type(), weapon_skin::skin_type_id());
+            }
         }
 
         g_origBuildWeaponModel(character);
@@ -312,6 +351,20 @@ namespace weapon_skin
         g_typeId = typeId;
     }
 
+    // Azzera TUTTO lo stato skin client-side (skin attiva + arma reale memorizzata).
+    // Chiamato da sync_local_char() al cambio personaggio in-game, per evitare il
+    // carryover della skin tra char dello stesso account. NON tocca la memoria di gioco
+    // (modello/globale): il rebuild successivo, con g_type=0, lascia l'arma reale.
+    void reset_state()
+    {
+        g_type = 0;
+        g_typeId = 0;
+        g_realType = 0;
+        g_realTypeId = 0;
+        g_realValid = false;
+        g_skinActive = false;
+    }
+
     // Applica il modello arma locale senza toccare la rete. type!=0 → imposta la
     // skin (il build hook la persiste in type[5]). type==0 → ripristina l'arma reale
     // memorizzata in type[5] PRIMA del rebuild (altrimenti type[5] resterebbe = skin
@@ -319,12 +372,22 @@ namespace weapon_skin
     // reply server 0x0A03.
     void apply_local_visual(uint8_t type, uint8_t typeId)
     {
+        // Il clear del server (0x83B type=0) all'enter-world arriva PRIMA del primo build:
+        // senza questa risincronizzazione, g_realValid apparterrebbe ancora al char
+        // precedente e ne ripristineremmo l'arma reale nel globale del nuovo personaggio.
+        sync_local_char();
+
         if (type == 0)
         {
             // clear: ripristina l'arma reale (modello + globale) PRIMA del rebuild,
             // altrimenti resterebbe la skin e l'arma vera non tornerebbe (corsa
             // invisibile finché non si cambia arma).
-            if (g_realValid)
+            // g_skinActive è la guardia chiave: ripristiniamo SOLO se avevamo davvero
+            // sovrascritto l'arma reale con una skin. Un clear su un char senza skin
+            // (0x83B type=0 all'enter-world) non deve MAI scrivere nel globale: se lo
+            // facesse con uno stato ereditato dal char precedente, gli imporrebbe
+            // l'arma reale di quello (→ arma sbagliata + invisibilità in corsa).
+            if (g_skinActive && g_realValid)
                 write_local_weapon(g_realType, g_realTypeId);
             set_local(0, 0);
             g_skinActive = false;

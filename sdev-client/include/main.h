@@ -127,6 +127,9 @@ namespace weapon_skin
     uint8_t skin_type();
     uint8_t skin_type_id();
     void set_local(uint8_t type, uint8_t typeId);
+    // Azzera lo stato skin client (skin attiva + arma reale memorizzata). Chiamato al
+    // cambio personaggio in-game per evitare il carryover della skin tra char.
+    void reset_state();
     // Applica il modello arma locale: type!=0 imposta la skin (persistente in type[5]),
     // type==0 ripristina l'arma reale memorizzata. NON invia nulla al server.
     void apply_local_visual(uint8_t type, uint8_t typeId);

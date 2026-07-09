@@ -513,46 +513,10 @@ int command_handler(char* text)
         apply_pets_setting(false);
         return 0;
     }
-    if (argv[0] == "/wskin")
-    {
-        // Admin-only (gate lato client, UX). authStatus @ CPlayerData 0x90D1D4:
-        // numero BASSO = più privilegi → admin sse authStatus <= AdminE(5).
-        // NB: NON è una barriera di sicurezza (client untrusted); i player normali
-        // equipaggiano comunque le skin via UI. Il server valida sempre
-        // whitelist + classe/fazione in weapon_skin::apply.
-        uint8_t auth = *reinterpret_cast<uint8_t*>(0x90D1D4);
-        if (auth > 5)
-        {
-            // Non-admin: consumo silenzioso. Nessun messaggio → non rivelo l'esistenza
-            // del comando (client untrusted). I player normali usano comunque la UI.
-            return 0;
-        }
-
-        uint8_t type = 0, typeId = 0;
-        if (argc >= 2 && argv[1] == "off")
-        {
-            type = 0;
-            typeId = 0;
-        }
-        else if (argc >= 3)
-        {
-            type = static_cast<uint8_t>(std::atoi(argv[1].c_str()));
-            typeId = static_cast<uint8_t>(std::atoi(argv[2].c_str()));
-        }
-        else
-        {
-            write_command_message("[wskin] Usage: /wskin <type> <typeId> | /wskin off");
-            return 0;
-        }
-
-        // Invia la richiesta al server (0x83A). Server-authoritative: se accetta risponde
-        // 0x83B (skin), se rifiuta 0x83D → "Cannot equip". /wskin off = clear.
-        if (type)
-            weapon_skin::request_set(type, typeId);
-        else
-            weapon_skin::request_clear();
-        return 0;
-    }
+    // Comando /wskin RIMOSSO per sicurezza. Le weapon skin si equipaggiano SOLO
+    // trascinando l'item skin (posseduto in inventario) sul box skin dell'inventario;
+    // il server valida whitelist + classe/fazione + possesso item (weapon_skin::apply).
+    // Il pannello GM "Weapon Skin" usa /getitem per prendere l'item fisico.
     if (argv[0] == "/eft")
     {
         if (argc < 2)
