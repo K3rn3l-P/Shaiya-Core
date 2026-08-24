@@ -466,8 +466,25 @@ namespace shaiya
         // EtainShield — anti-cutting per-user state (tick fine finestra post-attacco)
         tick32_t etainCuttingUntil;              //0x6308  tick fine lock (0 = nessuna finestra)
         int32_t  etainCuttingSkillId;            //0x630C  skillId ultimo attacco (-1 = normale)
-        PAD(12);                                 //0x6310  reserved
+
+        // EtainShield — anti-cutting v1 (RITIRATO, codice commentato in etain_shield.cpp — vedi
+        // #if 0 blocks. Campo ancora aggiornato da lock_movement_for_attack, riusato da v3 come
+        // "tick ultimo attacco" per il check catena.
+        tick32_t etainLastAttackTick;             //0x6310  tick attacco precedente (skill o normale)
+
+        // EtainShield — anti-cutting v2 (RITIRATO, codice commentato — gate globale 250ms tra cast
+        // skill, mirror del check client 0x44b331/0x7c49f8). Campi tenuti per riferimento futuro.
+        tick32_t etainLastSkillCastTick;          //0x6314  tick ultimo cast skill valido (0 = nessuno ancora)
+        uint16_t etainCuttingResetTime;           //0x6318  SkillInfo.resetTime (cooldown, solo per log)
+        PAD(2);                                   //0x631A  alignment
         // 0x631C
+
+        // EtainShield — anti-cutting v3: catena attacco -> item "a canale" (Party Summon, Move To,
+        // Recall, Teleport...). etainLastAttackTick/etainCuttingSkillId sopra sono già quello che
+        // serve per il check; qui solo il contatore catene consecutive.
+        uint8_t etainChainCount;                  //0x631C  catene consecutive rilevate (si azzera se si rompe)
+        PAD(3);                                   //0x631D  alignment
+        // 0x6320
 
         static void AddExpFromUser(CUser* user/*esi*/, unsigned lastTargetId, int exp, bool isQuest);
         static void CancelActionExc(CUser* user/*edi*/);
@@ -532,5 +549,5 @@ namespace shaiya
     #pragma pack(pop)
 
     //static_assert(sizeof(CUser) == 0x62A0);
-    static_assert(sizeof(CUser) == 0x631C);
+    static_assert(sizeof(CUser) == 0x6320);
 }

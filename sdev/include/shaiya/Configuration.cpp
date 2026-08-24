@@ -721,7 +721,9 @@ void Configuration::LoadEtainShield()
         g_etainConfig.speedLogOnly =
             util::ini::get_value(L"AntiSpeedHack", L"LogOnly", 1, path) != 0;
 
-        // [AntiCutting]
+        // [AntiCutting] v3 — catena attacco -> item "a canale". v1/v2 (LockMs/MinSkillGapMs/
+        // SkipSkillIds) RITIRATI, non più letti — vedi etain_shield_config.h e etain_shield.cpp
+        // (#if 0 blocks) per riferimento futuro.
         g_etainConfig.cuttingEnabled =
             util::ini::get_value(L"AntiCutting", L"Enabled", 1, path) != 0;
         g_etainConfig.cuttingLogOnly =
@@ -730,24 +732,16 @@ void Configuration::LoadEtainShield()
             util::ini::get_value(L"AntiCutting", L"KickOnViolation", 0, path) != 0;
         g_etainConfig.cuttingBanOnViolation =
             util::ini::get_value(L"AntiCutting", L"BanOnViolation", 0, path) != 0;
-        g_etainConfig.cuttingLockMs = static_cast<uint32_t>(
-            util::ini::get_value(L"AntiCutting", L"LockMs", 500, path));
-
-        auto skipStr = util::ini::get_value(L"AntiCutting", L"SkipSkillIds", L"56", path);
-        g_etainConfig.cuttingSkipSkills.clear();
-        if (!skipStr.empty())
-        {
-            size_t pos = 0;
-            while (pos < skipStr.size())
-            {
-                auto next = skipStr.find(L',', pos);
-                if (next == std::wstring::npos) next = skipStr.size();
-                auto token = skipStr.substr(pos, next - pos);
-                if (!token.empty())
-                    g_etainConfig.cuttingSkipSkills.push_back(std::stoi(token));
-                pos = next + 1;
-            }
-        }
+        g_etainConfig.cuttingChainWindowMs = static_cast<uint32_t>(
+            util::ini::get_value(L"AntiCutting", L"ChainWindowMs", 300, path));
+        g_etainConfig.cuttingChainTolerance = static_cast<uint8_t>(
+            util::ini::get_value(L"AntiCutting", L"ChainTolerance", 1, path));
+        g_etainConfig.cuttingDetectSkill =
+            util::ini::get_value(L"AntiCutting", L"DetectSkill", 1, path) != 0;
+        g_etainConfig.cuttingDetectNormal =
+            util::ini::get_value(L"AntiCutting", L"DetectNormal", 0, path) != 0;
+        g_etainConfig.cuttingDebugVerbose =
+            util::ini::get_value(L"AntiCutting", L"DebugVerbose", 0, path) != 0;
 
         // [AntiDupe]
         g_etainConfig.blockBoundItems =

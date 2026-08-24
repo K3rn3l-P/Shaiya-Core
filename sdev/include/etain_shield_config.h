@@ -92,14 +92,31 @@ struct EtainShieldConfig
     bool         speedBanOnViolation     = false;
     bool         speedLogOnly            = true; // true = logga e basta (ignora kick+ban); false = enforce
 
-    // [AntiCutting] — anti attack-move-cancel. Default LOG-ONLY (osserva, non blocca)
-    // per tarare LockMs sui tempi reali skill/attacco prima di abilitare l'enforce.
-    bool              cuttingEnabled   = true;
-    bool              cuttingLogOnly   = true;   // true = solo log; false = enforce (droppa move + kick/ban se attivi)
-    uint32_t          cuttingLockMs    = 500;    // finestra post-attacco in ms
-    std::vector<int>  cuttingSkipSkills;         // skill esenti (applicato in fase enforce)
+    // [AntiCutting] v3 — rileva la CATENA attacco (skill/normale) -> uso di un item "a canale"
+    // (Party Summon, Move To, Recall, Teleport...) entro una finestra breve. Non è un rate-limit
+    // sull'item (rischierebbe falsi positivi di massa su tanti utenti che li usano legittimamente
+    // in modo ravvicinato) — è specificamente il pattern skillcut osservato: canale annullato via
+    // salto/movimento subito dopo skill+item (nei log reali anche 9ms di scarto), item mai
+    // consumato. L'item NON viene mai bloccato/alterato: solo l'account viene punito.
+    bool              cuttingEnabled        = true;
+    bool              cuttingLogOnly        = true;  // true = solo log; false = enforce (kick/ban)
+    uint32_t          cuttingChainWindowMs  = 300;   // finestra (ms) attacco->item per contare come catena
+    uint8_t           cuttingChainTolerance = 1;     // catene consecutive perdonate prima di agire
+    bool              cuttingDetectSkill    = true;  // la catena scatta se l'attacco precedente era una skill
+    bool              cuttingDetectNormal   = false; // la catena scatta se l'attacco precedente era normale
     bool              cuttingKickOnViolation = false; // enforce: kicka su violazione (solo se cuttingLogOnly=false)
     bool              cuttingBanOnViolation  = false; // enforce: banna su violazione (solo se cuttingLogOnly=false)
+    // DebugVerbose: default OFF. Se ON, logga ANCHE gli usi item "a canale" NON in catena, col
+    // delta reale dall'ultimo attacco — serve solo per tarare ChainWindowMs (capire se stai
+    // mancando la finestra) e va rispento dopo, non per uso normale (rumore).
+    bool              cuttingDebugVerbose    = false;
+
+    // --- Sotto: v1/v2 RITIRATI (falsi positivi 16-28% / segnale non conclusivo su dati reali).
+    // Codice corrispondente commentato in etain_shield.cpp (#if 0 blocks). Campi/chiavi INI tenuti
+    // per riferimento futuro, non letti da alcun codice attivo.
+    // uint32_t       cuttingLockMs        = 500;
+    // uint32_t       cuttingMinSkillGapMs = 200;
+    // std::vector<int> cuttingSkipSkills;
 
     // [AntiDupe] — blocca item bound (ItemInfo.reqOg>=1) da drop/trade/battle/market/guild-WH.
     // Player WH (magazzino personale) ESCLUSO di proposito. Anti bypass-binding.

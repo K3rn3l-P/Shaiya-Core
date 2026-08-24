@@ -7,6 +7,9 @@ namespace shaiya
     struct GameCharMoveIncoming;
     struct GameCharAttackUserIncoming;
     struct GameCharAttackMobIncoming;
+    struct GameCharSkillUseIncoming;
+    struct GameItemUseOnTargetIncoming;
+    struct GameItemUseIncoming;
 }
 
 namespace etain_shield
@@ -39,6 +42,25 @@ namespace etain_shield
 
     /// Basic attack on mob (0x503 packet).  Returns 1=allow, 0=drop.
     int validate_attack_mob(shaiya::CUser* user, shaiya::GameCharAttackMobIncoming* packet);
+
+    // --- AntiCutting v2 (skillcut server-authoritative) ---
+
+    /// Skill-use packet (0x511).  Mirror del gate client 250ms (0x7c49f8/0x44b331 in game.exe,
+    /// aggirabile col patch je->jmp) — qui è server-authoritative, il client non può bypassarlo.
+    /// Returns 1=allow, 0=drop (drop solo se cuttingLogOnly=false).
+    int validate_skill_use(shaiya::CUser* user, shaiya::GameCharSkillUseIncoming* packet);
+
+    // --- AntiCutting: correlazione item "a canale" (indagine, solo log) ---
+
+    /// Item-use-su-bersaglio (0x557). Logga SOLO se l'item è PartyMemberSummon/PartyMemberMoveTo
+    /// (item con canale differito lato server — sospettati di interagire con la recovery skill,
+    /// vedi indagine skillcut). Nessun enforce: puramente diagnostico per correlare i timestamp
+    /// con gli eventi anticutting esistenti. No-op se l'item non è uno dei due monitorati.
+    void log_channeled_item_use(shaiya::CUser* user, shaiya::GameItemUseOnTargetIncoming* packet);
+
+    /// Variante senza bersaglio esplicito (0x50A) — usata da PartyMemberSummon (target
+    /// implicito = self/party). Stessa logica di log_channeled_item_use.
+    void log_channeled_item_use_self(shaiya::CUser* user, shaiya::GameItemUseIncoming* packet);
 
     // --- AntiDupe (item bound) ---
 

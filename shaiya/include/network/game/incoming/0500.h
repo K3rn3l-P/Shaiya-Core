@@ -34,6 +34,41 @@ namespace shaiya
     #pragma pack(pop)
 
     #pragma pack(push, 1)
+    // TPC_PC_SKILL_USE — offset+0x2 = slot (verificato via Ghidra su handler ps_game.exe
+    // 0x478bb2: MOV CL,[EBP+0x2]; CMP CL,0xFF = cancel/stop skill, non un cast).
+    struct GameCharSkillUseIncoming
+    {
+        uint16_t opcode{ 0x511 };
+        uint8_t slot;
+    };
+    #pragma pack(pop)
+
+    #pragma pack(push, 1)
+    // TPC_PC_ITEM_USE_ON_TARGET — 0x557, handler ps_game.exe 0x479006 -> FUN_00472da0.
+    // bag/slot risolvono l'item (CUser+0x1C0 + (slot+bag*0x18)*4 -> CItem*), targetId è
+    // il personaggio bersaglio (usato da PartyMemberSummon/PartyMemberMoveTo tra gli altri).
+    struct GameItemUseOnTargetIncoming
+    {
+        uint16_t opcode{ 0x557 };
+        uint8_t bag;
+        uint8_t slot;
+        uint32_t targetId;
+    };
+    #pragma pack(pop)
+
+    #pragma pack(push, 1)
+    // TPC_PC_ITEM_USE — 0x50A, handler ps_game.exe 0x478f8d -> FUN_00472da0 (target
+    // implicito = self, [EDI+0xdc]). Variante SENZA bersaglio esplicito — usata da
+    // PartyMemberSummon (somma l'intero party, non serve scegliere chi).
+    struct GameItemUseIncoming
+    {
+        uint16_t opcode{ 0x50A };
+        uint8_t bag;
+        uint8_t slot;
+    };
+    #pragma pack(pop)
+
+    #pragma pack(push, 1)
     struct GameCharMotionIncoming
     {
         uint16_t opcode{ 0x506 };

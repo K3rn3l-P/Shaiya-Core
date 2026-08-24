@@ -7,11 +7,14 @@
 #include "include/etain_shield_config.h"
 #include "include/security_logger.h"
 #include "include/shaiya/CObject.h"
+#include "include/shaiya/CItem.h"
 #include "include/shaiya/CMob.h"
 #include "include/shaiya/CUser.h"
 #include "include/shaiya/CZone.h"
+#include "include/shaiya/ItemInfo.h"
 #include "include/shaiya/MobInfo.h"
 #include "include/shaiya/NetworkHelper.h"
+#include "include/shaiya/SkillInfo.h"
 #include "include/shaiya/SVector.h"
 using namespace shaiya;
 
@@ -205,6 +208,13 @@ namespace etain_shield
     //  position.  Otherwise subsequent packets measure accumulated distance
     //  from a stale position, causing a cascading false-positive spiral.
 
+    // Mutex del file anticutting-{data}.log — condiviso con v3 (log_channeled_item_use_core),
+    // per questo resta fuori dal blocco #if 0 del v1 sotto.
+    static std::mutex g_anticutLogMtx;
+
+#if 0
+    // RITIRATO (v1) — falsi positivi 16-28% sul gioco legittimo, misurati su dati reali (vedi
+    // piano skillcut). Tenuto per riferimento futuro, non compilato.
     // ===================================================================
     //  AntiCutting — anti attack-move-cancel  (default LOG-ONLY)
     // ===================================================================
@@ -214,8 +224,6 @@ namespace etain_shield
     //    - LogOnly=1 : LOGGATA (intervallo attacco->move) e LASCIATA passare
     //    - LogOnly=0 : DROPPATA (enforce — player non si muove)
     //  Log: C:\ShaiyaServer\Logs\EtainShield\anticutting-{data}.log
-
-    static std::mutex g_anticutLogMtx;
 
     static void anticutting_log(CUser* user, uint32_t intervalMs)
     {
@@ -229,13 +237,14 @@ namespace etain_shield
             "C:\\ShaiyaServer\\Logs\\EtainShield\\anticutting-%04d-%02d-%02d.log",
             st.wYear, st.wMonth, st.wDay);
 
-        char line[256];
+        char line[384];
         int len = std::snprintf(line, sizeof(line),
-            "[%02d:%02d:%02d] user=%-20s interval=%4ums lockMs=%u type=%-6s skillId=%d\r\n",
-            st.wHour, st.wMinute, st.wSecond,
+            "[%02d:%02d:%02d.%03d] user=%-20s interval=%4ums lockMs=%u type=%-6s skillId=%d reset=%u\r\n",
+            st.wHour, st.wMinute, st.wSecond, st.wMilliseconds,
             user->username.data(), intervalMs, g_etainConfig.cuttingLockMs,
             (user->etainCuttingSkillId >= 0) ? "Skill" : "Normal",
-            user->etainCuttingSkillId);
+            user->etainCuttingSkillId,
+            static_cast<unsigned>(user->etainCuttingResetTime));
         if (len <= 0) return;
 
         {
@@ -261,6 +270,7 @@ namespace etain_shield
         //    user->etainCuttingSkillId);
         //security_logger::log("server", user->username.data(), "CUTTING", detail);
     }
+#endif
 
     // Log EtainShield → cartella dedicata, un file per rilevazione (come AntiCutting):
     //   C:\ShaiyaServer\Logs\EtainShield\{logName}-{data}.log
@@ -295,34 +305,101 @@ namespace etain_shield
         CloseHandle(h);
     }
 
-    // skillId dell'attacco skill corrente. Offset verificati dal dispatch ps_game.exe
+    // SkillInfo* dell'attacco skill corrente. Offset verificati dal dispatch ps_game.exe
     // (FUN_00478490): CUser+0xABC = numero skill, CUser+0xAC0 = array puntatori slot,
-    // skillObj+0x34 = SkillInfo*, SkillInfo+0x00 = skillId. -1 = normale/non risolto.
-    static int current_skill_id(CUser* user)
+    // skillObj+0x34 = SkillInfo*. nullptr = normale/non risolto.
+    static SkillInfo* current_skill_info(CUser* user)
     {
         if (user->attackType != UserAttackType::Skill)
-            return -1;
+            return nullptr;
         char* base = reinterpret_cast<char*>(user);
         int count = *reinterpret_cast<int*>(base + 0xABC);
         int idx   = static_cast<int>(user->prevSkillUseIndex);
         if (idx < 0 || idx >= count)
-            return -1;
+            return nullptr;
         void* skillObj = *reinterpret_cast<void**>(base + 0xAC0 + idx * 4);
-        if (!skillObj) return -1;
+        if (!skillObj) return nullptr;
         void* si = *reinterpret_cast<void**>(reinterpret_cast<char*>(skillObj) + 0x34);
-        if (!si) return -1;
-        return *reinterpret_cast<uint16_t*>(si);   // SkillInfo+0x00
+        return reinterpret_cast<SkillInfo*>(si);
+    }
+
+    // SkillInfo* dallo slot esplicito del pacchetto 0x511 (packet+0x2) — stesso path di
+    // risoluzione dell'handler nativo 0x478bb2 (CUser+0xABC=count, CUser+0xAC0+slot*4=array).
+    // Più preciso di current_skill_info() per il cast IN ARRIVO ORA: il nostro hook sul
+    // dispatch 0x4784D6 gira PRIMA che il nativo aggiorni attackType/prevSkillUseIndex,
+    // quindi current_skill_info() rifletterebbe ancora il cast precedente, non questo.
+    // Riattivato per v3: validate_skill_use la usa per catturare tick+skillId AL MOMENTO
+    // del cast (immediato), non al momento del danno (troppo tardi per skill con windup).
+    static SkillInfo* skill_info_from_slot(CUser* user, uint8_t slot)
+    {
+        char* base = reinterpret_cast<char*>(user);
+        int count = *reinterpret_cast<int*>(base + 0xABC);
+        if (slot >= count) return nullptr;
+        void* skillObj = *reinterpret_cast<void**>(base + 0xAC0 + slot * 4);
+        if (!skillObj) return nullptr;
+        void* si = *reinterpret_cast<void**>(reinterpret_cast<char*>(skillObj) + 0x34);
+        return reinterpret_cast<SkillInfo*>(si);
+    }
+
+    // Riga informativa per ogni attacco (skill/normale) nello stesso file anticutting-{data}.log
+    // usato da v3 — pura visibilità/correlazione timestamp con ITEM_USE/SKILLCUT_CHAIN, nessuna
+    // detection qui (quella è in log_channeled_item_use_core). Rispetta DetectSkill/DetectNormal:
+    // se il tipo è disabilitato non contribuirà mai alla catena, quindi non lo logghiamo nemmeno
+    // (rumore inutile, e coerente con l'aspettativa che DetectNormal=0 "spenga" il normale).
+    static void attack_log(CUser* user, int skillId, uint16_t resetTime)
+    {
+        bool typeEnabled = (skillId >= 0) ? g_etainConfig.cuttingDetectSkill
+                                          : g_etainConfig.cuttingDetectNormal;
+        if (!typeEnabled) return;
+
+        SYSTEMTIME st;
+        GetLocalTime(&st);
+        CreateDirectoryA("C:\\ShaiyaServer\\Logs", nullptr);
+        CreateDirectoryA("C:\\ShaiyaServer\\Logs\\EtainShield", nullptr);
+
+        char path[MAX_PATH];
+        std::snprintf(path, sizeof(path),
+            "C:\\ShaiyaServer\\Logs\\EtainShield\\anticutting-%04d-%02d-%02d.log",
+            st.wYear, st.wMonth, st.wDay);
+
+        char line[192];
+        int len = std::snprintf(line, sizeof(line),
+            "[%02d:%02d:%02d.%03d] user=%-20s ATTACK   type=%-14s skillId=%d reset=%u\r\n",
+            st.wHour, st.wMinute, st.wSecond, st.wMilliseconds,
+            user->username.data(), (skillId >= 0) ? "Skill" : "Normal", skillId,
+            static_cast<unsigned>(resetTime));
+        if (len <= 0) return;
+
+        std::lock_guard<std::mutex> lk(g_anticutLogMtx);
+        HANDLE h = CreateFileA(path, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                               nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (h == INVALID_HANDLE_VALUE) return;
+        DWORD written = 0;
+        WriteFile(h, line, static_cast<DWORD>(len), &written, nullptr);
+        CloseHandle(h);
     }
 
     // Chiamata dai detour attacco (0x457F50/0x458000) e dai handler 0x502/0x503.
-    // Segna la finestra + cattura lo skillId (per SkipSkillIds futuro + tuning log).
-    // Log-only: nessuna esenzione SkipSkillIds (registriamo tutto, incl. dash).
+    // Per le SKILL: NON tocca più nulla — validate_skill_use (sotto) cattura già
+    // tick+skillId al momento del CAST (pacchetto 0x511, immediato). Questa funzione
+    // (chiamata più tardi, al momento in cui il colpo si risolve/passa il check di
+    // range nativo) arriverebbe troppo tardi per skill con windup/cast time, facendo
+    // perdere la finestra ChainWindowMs rispetto a un item-uso immediato dopo il cast.
+    // Per gli attacchi NORMALI (0x502/0x503) resta l'unico punto di cattura, ed è già
+    // immediato (chiamata diretta dal packet handler).
     void lock_movement_for_attack(CUser* user)
     {
         if (!user || !g_etainConfig.enabled || !g_etainConfig.cuttingEnabled)
             return;
-        user->etainCuttingSkillId = current_skill_id(user);
-        user->etainCuttingUntil   = GetTickCount() + g_etainConfig.cuttingLockMs;
+
+        if (current_skill_info(user) != nullptr)
+            return;   // skill: già catturata da validate_skill_use, non sovrascrivere
+
+        user->etainLastAttackTick   = GetTickCount();
+        user->etainCuttingSkillId   = -1;
+        user->etainCuttingResetTime = 0;
+
+        attack_log(user, user->etainCuttingSkillId, user->etainCuttingResetTime);
     }
 
     bool validate_movement(CUser* user, GameCharMoveIncoming* packet)
@@ -332,9 +409,17 @@ namespace etain_shield
 
         auto now = GetTickCount();
 
+#if 0
+        // RITIRATO (v1) — falsi positivi 16-28% sul gioco legittimo, misurati su dati reali
+        // (vedi piano skillcut). Tenuto per riferimento futuro, non compilato.
         // --- AntiCutting (log-only / enforce) ---
         // 0x501 arrivata dentro la finestra post-attacco.
-        if (g_etainConfig.cuttingEnabled && user->etainCuttingUntil != 0
+        // DetectSkill/DetectNormal: filtro tipo attacco (etainCuttingSkillId settato da
+        // lock_movement_for_attack tramite current_skill_id(); >=0 = skill, -1 = normale).
+        bool cuttingTypeEnabled = (user->etainCuttingSkillId >= 0)
+            ? g_etainConfig.cuttingDetectSkill
+            : g_etainConfig.cuttingDetectNormal;
+        if (g_etainConfig.cuttingEnabled && cuttingTypeEnabled && user->etainCuttingUntil != 0
             && static_cast<int32_t>(now - user->etainCuttingUntil) < 0)
         {
             uint32_t intervalMs = g_etainConfig.cuttingLockMs
@@ -358,6 +443,7 @@ namespace etain_shield
             // Log-only: logga solo la prima move post-attacco, poi consuma la finestra.
             user->etainCuttingUntil = 0;
         }
+#endif
 
         // --- AntiSpeedHack ---
         if (!g_etainConfig.speedHackEnabled)
@@ -457,11 +543,15 @@ namespace etain_shield
 
     void reset_tracking(CUser* user)
     {
-        user->etainLastPos          = {};
-        user->etainLastMoveTick     = 0;
-        user->etainViolationCount   = 0;
-        user->etainCuttingUntil     = 0;
-        user->etainCuttingSkillId   = -1;
+        user->etainLastPos           = {};
+        user->etainLastMoveTick      = 0;
+        user->etainViolationCount    = 0;
+        user->etainCuttingUntil      = 0;
+        user->etainCuttingSkillId    = -1;
+        user->etainLastAttackTick    = 0;
+        user->etainCuttingResetTime  = 0;
+        user->etainLastSkillCastTick = 0;
+        user->etainChainCount        = 0;
     }
 
     // ===================================================================
@@ -596,6 +686,338 @@ namespace etain_shield
             kick_user(user);  // ban = rimuove anche la sessione live (come GMSecurity)
         }
         return 0;
+    }
+
+#if 0
+    // RITIRATO (v2) — gate 250ms tra cast skill: mai scattato nei test mirati skillcut (tranne
+    // una volta, non conclusivo). Il vero segnale è la catena attacco->item "a canale" (v3, vedi
+    // log_channeled_item_use_core più sotto). Tenuto per riferimento futuro, non compilato.
+    // ===================================================================
+    //  AntiCutting v2 — skillcut server-authoritative (gate 250ms tra cast skill)
+    // ===================================================================
+    //
+    //  Il client (game.exe) impone un gate GLOBALE di 250ms tra due cast skill
+    //  qualsiasi: global 0x7c49f8 = tick ultimo cast, check identico a
+    //  0x44a7d4 e 0x44b331 ("EAX = now - [0x7c49f8]; CMP EAX,0xfa; JBE reject").
+    //  Il fix noto "je -> jmp" a 0x44b308 (essential)/0x44af80 (eric) bypassa
+    //  esattamente questo blocco — è il meccanismo dello skillcut.
+    //
+    //  Client è untrusted: replichiamo lo stesso gate qui, server-side, dove è
+    //  autoritativo — un client patchato non può aggirarlo.
+    //
+    //  Punto di aggancio: opcode 0x511 (cast skill), handler nativo 0x478bb2
+    //  verificato via Ghidra — packet+0x2 (byte) = slot skill, 0xFF = cancel/
+    //  stop (non un cast, va ignorato).
+    static std::mutex g_skillcutLogMtx;
+
+    static void skillcut_log(CUser* user, uint32_t deltaMs, int skillId, uint16_t resetTime)
+    {
+        SYSTEMTIME st;
+        GetLocalTime(&st);
+        CreateDirectoryA("C:\\ShaiyaServer\\Logs", nullptr);
+        CreateDirectoryA("C:\\ShaiyaServer\\Logs\\EtainShield", nullptr);
+
+        char path[MAX_PATH];
+        std::snprintf(path, sizeof(path),
+            "C:\\ShaiyaServer\\Logs\\EtainShield\\anticutting-%04d-%02d-%02d.log",
+            st.wYear, st.wMonth, st.wDay);
+
+        char line[256];
+        int len = std::snprintf(line, sizeof(line),
+            "[%02d:%02d:%02d.%03d] user=%-20s SKILLCUT delta=%ums minGap=%ums skillId=%d reset=%u\r\n",
+            st.wHour, st.wMinute, st.wSecond, st.wMilliseconds,
+            user->username.data(), deltaMs, g_etainConfig.cuttingMinSkillGapMs, skillId,
+            static_cast<unsigned>(resetTime));
+        if (len <= 0) return;
+
+        std::lock_guard<std::mutex> lk(g_skillcutLogMtx);
+        HANDLE h = CreateFileA(path, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                               nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (h == INVALID_HANDLE_VALUE) return;
+        DWORD written = 0;
+        WriteFile(h, line, static_cast<DWORD>(len), &written, nullptr);
+        CloseHandle(h);
+    }
+
+    int validate_skill_use_v2_retired(CUser* user, GameCharSkillUseIncoming* packet)
+    {
+        if (!user || !packet) return 1;
+        if (!g_etainConfig.enabled || !g_etainConfig.cuttingEnabled)
+            return 1;
+
+        // slot 0xFF = cancel/stop skill (verificato: handler 0x478bb2 lo tratta come
+        // percorso separato, non è un cast) — non misurare, non conta come cast.
+        if (packet->slot == 0xFF)
+            return 1;
+
+        auto now = GetTickCount();
+
+        // Primo cast osservato (dopo login/reset) — nessun riferimento precedente, non flaggare.
+        if (user->etainLastSkillCastTick == 0)
+        {
+            user->etainLastSkillCastTick = now;
+            return 1;
+        }
+
+        uint32_t delta = now - user->etainLastSkillCastTick;
+
+        if (delta < g_etainConfig.cuttingMinSkillGapMs)
+        {
+            // Risolve SkillInfo dallo slot esplicito del pacchetto (skill che sta per
+            // partire ORA) per loggare skillId/resetTime — informativo, non usato per
+            // la soglia (v. plan).
+            SkillInfo* si = skill_info_from_slot(user, packet->slot);
+            int skillId = si ? si->skillId : -1;
+            uint16_t resetTime = si ? si->resetTime : 0;
+
+            skillcut_log(user, delta, skillId, resetTime);
+
+            if (!g_etainConfig.cuttingLogOnly)
+            {
+                if (g_etainConfig.cuttingKickOnViolation)
+                    kick_user(user);
+                if (g_etainConfig.cuttingBanOnViolation)
+                {
+                    security_logger::ban_user((int)user->billingId, "AutoBan:SKILLCUT");
+                    kick_user(user);
+                }
+                return 0;   // drop: il client non riceve conferma, la skill non parte
+            }
+        }
+
+        user->etainLastSkillCastTick = now;
+        return 1;
+    }
+#endif
+
+    // AntiCutting v2 (gate 250ms) RITIRATO (vedi #if 0 sopra) — non droppa più nulla, sempre
+    // return 1. Cattura invece qui, AL MOMENTO DEL CAST (pacchetto 0x511, immediato), tick +
+    // skillId + resetTime per il check catena v3 (log_channeled_item_use_core): è il punto
+    // corretto, prima che l'eventuale windup/cast time della skill ritardi la risoluzione del
+    // colpo (lock_movement_for_attack, chiamata dal check nativo di range, arriverebbe troppo
+    // tardi rispetto a un item-uso immediato dopo il cast — bug osservato nei log reali).
+    int validate_skill_use(CUser* user, GameCharSkillUseIncoming* packet)
+    {
+        if (!user || !packet) return 1;
+        if (!g_etainConfig.enabled || !g_etainConfig.cuttingEnabled)
+            return 1;
+
+        // slot 0xFF = cancel/stop skill, non un cast — non aggiorna lo stato catena.
+        if (packet->slot == 0xFF)
+            return 1;
+
+        SkillInfo* si = skill_info_from_slot(user, packet->slot);
+        user->etainLastAttackTick = GetTickCount();
+        if (si)
+        {
+            user->etainCuttingSkillId   = si->skillId;
+            user->etainCuttingResetTime = si->resetTime;
+        }
+        else
+        {
+            user->etainCuttingSkillId   = -1;
+            user->etainCuttingResetTime = 0;
+        }
+
+        attack_log(user, user->etainCuttingSkillId, user->etainCuttingResetTime);
+        return 1;
+    }
+
+    // ===================================================================
+    //  AntiCutting v3 — catena attacco -> item "a canale" (rilevatore attivo)
+    // ===================================================================
+    //
+    //  9 tipi di effetto item condividono lo stesso stato differito lato server
+    //  CUser+0x58B4 (verificato via Ghidra su FUN_00472da0, ps_game.exe): l'utente
+    //  ha confermato che usarli SUBITO DOPO una skill/attacco ne annulla il recovery
+    //  ("skillcut") — il canale non si completa, l'item non si consuma.
+    //
+    //  Qui NON si tocca mai il pacchetto item-use (Party Summon/Move To restano
+    //  perfettamente funzionanti, essenziali in PvP) — si rileva la CATENA
+    //  (attacco -> item entro cuttingChainWindowMs) e si punisce solo l'account
+    //  se si ripete oltre cuttingChainTolerance volte di fila. Un rate-limit
+    //  puro sull'item era stato scartato: su un server con migliaia di utenti,
+    //  l'uso legittimo ravvicinato di questi item (senza relazione con un
+    //  attacco) non deve mai contare come violazione.
+    //
+    //  Lookup item: stesso path del nativo (FUN_00472da0) — CUser+0x1C0 è l'array
+    //  inventario (CItem* per slot), indicizzato (slot + bag*0x18); CItem::info
+    //  (0x30) -> ItemInfo*; ItemInfo::effect (0x46) = tipo effetto.
+    static const char* channeled_item_label(uint8_t rawEffect)
+    {
+        switch (rawEffect)
+        {
+            case static_cast<uint8_t>(ItemEffect::PartyMemberSummon): return "SUMMON";
+            case static_cast<uint8_t>(ItemEffect::PartyMemberMoveTo): return "MOVETO";
+            case static_cast<uint8_t>(ItemEffect::Teleportation):     return "TELEPORT";
+            case static_cast<uint8_t>(ItemEffect::CapitalRecall):     return "CAPITAL_RECALL";
+            case static_cast<uint8_t>(ItemEffect::BootleggeryRecall): return "BOOTLEG_RECALL";
+            case static_cast<uint8_t>(ItemEffect::ArenaRecall):       return "ARENA_RECALL";
+            case static_cast<uint8_t>(ItemEffect::GuildHouseRecall):  return "GUILD_RECALL";
+            case static_cast<uint8_t>(ItemEffect::MoveWar):           return "MOVEWAR";
+            // Non nominato in ItemEffect.h (gap 74/75 tra MobGen=73 e PremiumLapisiaLv1=76) ma
+            // condivide lo stesso tail differito (LAB_00473E05) di CapitalRecall/BootleggeryRecall.
+            case 0x4A:                                                return "RECALL_0x4A";
+            default:                                                  return nullptr;
+        }
+    }
+
+    static void log_channeled_item_use_core(CUser* user, uint8_t bag, uint8_t slot,
+                                             uint32_t targetId, bool hasTarget)
+    {
+        if (!user) return;
+        if (!g_etainConfig.enabled || !g_etainConfig.cuttingEnabled) return;
+
+        char* base = reinterpret_cast<char*>(user);
+        int index = slot + bag * 0x18;
+        CItem* item = *reinterpret_cast<CItem**>(base + 0x1C0 + index * 4);
+        if (!item || !item->info) return;
+
+        const char* label = channeled_item_label(static_cast<uint8_t>(item->info->effect));
+        if (!label) return;   // non uno dei tipi "a canale" monitorati
+
+        auto now = GetTickCount();
+
+        // Catena: l'ultimo attacco (skill/normale) è abbastanza recente E il suo tipo
+        // è abilitato da DetectSkill/DetectNormal?
+        bool hasRecentAttack = (user->etainLastAttackTick != 0);
+        uint32_t deltaFromAttack = hasRecentAttack
+            ? (now - user->etainLastAttackTick) : 0;
+        bool withinWindow = hasRecentAttack && deltaFromAttack <= g_etainConfig.cuttingChainWindowMs;
+        bool typeEnabled = (user->etainCuttingSkillId >= 0)
+            ? g_etainConfig.cuttingDetectSkill
+            : g_etainConfig.cuttingDetectNormal;
+        bool chained = withinWindow && typeEnabled;
+
+        if (chained)
+        {
+            ++user->etainChainCount;
+        }
+        else
+        {
+            // Nessun attacco recente/abilitato entro la finestra: uso isolato dell'item,
+            // non è una catena — non lo logghiamo nemmeno (rumore, non skillcut), TRANNE
+            // se DebugVerbose=1 (tuning ChainWindowMs: vogliamo vedere il delta reale che
+            // stiamo scartando, per capire se la finestra è troppo stretta).
+            //
+            // IMPORTANTE: NON azzeriamo etainChainCount qui. Un uso isolato scollegato
+            // (es. summon usato normalmente qualche secondo dopo una skill, senza intento
+            // di skillcut) non deve cancellare le catene VERE già rilevate in precedenza —
+            // altrimenti un giocatore che intervalla i tentativi di skillcut con un uso
+            // normale non supererebbe mai la tolleranza (bug osservato: 3 catene genuine,
+            // ognuna isolata da un uso scollegato in mezzo, mai accumulate). Il contatore
+            // si azzera solo su reset_tracking() (teleport/cambio zona/login).
+            if (!g_etainConfig.cuttingDebugVerbose)
+                return;
+
+            SYSTEMTIME dst;
+            GetLocalTime(&dst);
+            CreateDirectoryA("C:\\ShaiyaServer\\Logs", nullptr);
+            CreateDirectoryA("C:\\ShaiyaServer\\Logs\\EtainShield", nullptr);
+            char dpath[MAX_PATH];
+            std::snprintf(dpath, sizeof(dpath),
+                "C:\\ShaiyaServer\\Logs\\EtainShield\\anticutting-%04d-%02d-%02d.log",
+                dst.wYear, dst.wMonth, dst.wDay);
+            char dline[192];
+            int dlen = hasRecentAttack
+                ? std::snprintf(dline, sizeof(dline),
+                    "[%02d:%02d:%02d.%03d] user=%-20s ITEM_USE_SKIPPED type=%-14s deltaFromAttack=%ums "
+                    "windowMs=%u typeEnabled=%d\r\n",
+                    dst.wHour, dst.wMinute, dst.wSecond, dst.wMilliseconds,
+                    user->username.data(), label, deltaFromAttack,
+                    g_etainConfig.cuttingChainWindowMs, typeEnabled ? 1 : 0)
+                : std::snprintf(dline, sizeof(dline),
+                    "[%02d:%02d:%02d.%03d] user=%-20s ITEM_USE_SKIPPED type=%-14s deltaFromAttack=none\r\n",
+                    dst.wHour, dst.wMinute, dst.wSecond, dst.wMilliseconds,
+                    user->username.data(), label);
+            if (dlen > 0)
+            {
+                std::lock_guard<std::mutex> dlk(g_anticutLogMtx);
+                HANDLE dh = CreateFileA(dpath, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                                        nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+                if (dh != INVALID_HANDLE_VALUE)
+                {
+                    DWORD dwritten = 0;
+                    WriteFile(dh, dline, static_cast<DWORD>(dlen), &dwritten, nullptr);
+                    CloseHandle(dh);
+                }
+            }
+            return;
+        }
+
+        SYSTEMTIME st;
+        GetLocalTime(&st);
+        CreateDirectoryA("C:\\ShaiyaServer\\Logs", nullptr);
+        CreateDirectoryA("C:\\ShaiyaServer\\Logs\\EtainShield", nullptr);
+
+        char path[MAX_PATH];
+        std::snprintf(path, sizeof(path),
+            "C:\\ShaiyaServer\\Logs\\EtainShield\\anticutting-%04d-%02d-%02d.log",
+            st.wYear, st.wMonth, st.wDay);
+
+        char line[288];
+        int len;
+        if (hasTarget)
+            len = std::snprintf(line, sizeof(line),
+                "[%02d:%02d:%02d.%03d] user=%-20s ITEM_USE type=%-14s bag=%u slot=%u target=%u chain=%u\r\n",
+                st.wHour, st.wMinute, st.wSecond, st.wMilliseconds,
+                user->username.data(), label,
+                static_cast<unsigned>(bag), static_cast<unsigned>(slot),
+                static_cast<unsigned>(targetId), static_cast<unsigned>(user->etainChainCount));
+        else
+            len = std::snprintf(line, sizeof(line),
+                "[%02d:%02d:%02d.%03d] user=%-20s ITEM_USE type=%-14s bag=%u slot=%u target=self chain=%u\r\n",
+                st.wHour, st.wMinute, st.wSecond, st.wMilliseconds,
+                user->username.data(), label,
+                static_cast<unsigned>(bag), static_cast<unsigned>(slot),
+                static_cast<unsigned>(user->etainChainCount));
+        if (len > 0)
+        {
+            std::lock_guard<std::mutex> lk(g_anticutLogMtx);
+            HANDLE h = CreateFileA(path, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                                   nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+            if (h != INVALID_HANDLE_VALUE)
+            {
+                DWORD written = 0;
+                WriteFile(h, line, static_cast<DWORD>(len), &written, nullptr);
+                CloseHandle(h);
+            }
+        }
+
+        if (user->etainChainCount <= g_etainConfig.cuttingChainTolerance)
+            return;   // ancora dentro la tolleranza, nessuna violazione
+
+        // Violazione: catena skillcut confermata oltre la tolleranza.
+        char detail[160];
+        std::snprintf(detail, sizeof(detail),
+            "item=%s skillId=%d chain=%u tolerance=%u windowMs=%u",
+            label, user->etainCuttingSkillId, static_cast<unsigned>(user->etainChainCount),
+            static_cast<unsigned>(g_etainConfig.cuttingChainTolerance), g_etainConfig.cuttingChainWindowMs);
+        etain_log("skillcut_chain", "SKILLCUT_CHAIN", user, detail);
+        security_logger::log("server", user->username.data(), "SKILLCUT_CHAIN", detail);
+
+        if (g_etainConfig.cuttingLogOnly)
+            return;
+
+        if (g_etainConfig.cuttingKickOnViolation)
+            kick_user(user);
+        if (g_etainConfig.cuttingBanOnViolation)
+        {
+            security_logger::ban_user((int)user->billingId, "AutoBan:SKILLCUT_CHAIN");
+            kick_user(user);  // ban = rimuove anche la sessione live (come GMSecurity)
+        }
+    }
+
+    void log_channeled_item_use(CUser* user, GameItemUseOnTargetIncoming* packet)
+    {
+        if (!packet) return;
+        log_channeled_item_use_core(user, packet->bag, packet->slot, packet->targetId, true);
+    }
+
+    void log_channeled_item_use_self(CUser* user, GameItemUseIncoming* packet)
+    {
+        if (!packet) return;
+        log_channeled_item_use_core(user, packet->bag, packet->slot, 0, false);
     }
 
     // AntiDupe: true se l'item slot è bound e il toggle [AntiDupe] BlockBoundItems è attivo.

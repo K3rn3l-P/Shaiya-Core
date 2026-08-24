@@ -246,6 +246,35 @@ namespace packet_pc
     {
         return etain_shield::validate_attack_mob(user, packet);
     }
+
+    /// <summary>
+    /// EtainShield AntiCutting v2: validates 0x511 skill-use cast (gate 250ms server-side,
+    /// mirror del check client aggirabile — vedi etain_shield::validate_skill_use).
+    /// Returns 1 (allow) or 0 (drop).
+    /// </summary>
+    int validate_skill_use_packet(CUser* user, GameCharSkillUseIncoming* packet)
+    {
+        return etain_shield::validate_skill_use(user, packet);
+    }
+
+    /// <summary>
+    /// EtainShield: indagine skillcut (solo log, nessun enforce) — logga se l'item usato
+    /// su bersaglio (0x557) è PartyMemberSummon/PartyMemberMoveTo. Vedi
+    /// etain_shield::log_channeled_item_use per il dettaglio dell'ipotesi.
+    /// </summary>
+    void log_item_use_on_target_packet(CUser* user, GameItemUseOnTargetIncoming* packet)
+    {
+        etain_shield::log_channeled_item_use(user, packet);
+    }
+
+    /// <summary>
+    /// EtainShield: indagine skillcut — variante item-use SENZA bersaglio esplicito (0x50A),
+    /// usata da PartyMemberSummon (somma l'intero party, target implicito = self).
+    /// </summary>
+    void log_item_use_packet(CUser* user, GameItemUseIncoming* packet)
+    {
+        etain_shield::log_channeled_item_use_self(user, packet);
+    }
 }
 
 
@@ -274,6 +303,18 @@ void __declspec(naked) naked_0x4784D6()
         // EtainShield: intercept 0x503 (attack mob) — eax == 2
         cmp eax,0x2
         je case_0x503
+
+        // EtainShield AntiCutting v2: intercept 0x511 (cast skill) — eax == 0x10
+        cmp eax,0x10
+        je case_0x511
+
+        // EtainShield: indagine skillcut, item-use senza bersaglio 0x50A — eax == 0x9
+        cmp eax,0x9
+        je case_0x50A
+
+        // EtainShield: indagine skillcut, item-use-su-bersaglio 0x557 — eax == 0x56
+        cmp eax,0x56
+        je case_0x557
 
         cmp eax,0x59
         je case_0x55A
@@ -340,6 +381,51 @@ void __declspec(naked) naked_0x4784D6()
         drop_0x503:
         popad
         jmp u0x479155
+
+        // --- 0x511: Skill use (cast) — AntiCutting v2 gate ---
+        case_0x511:
+        pushad
+
+        push ebp // packet (GameCharSkillUseIncoming*)
+        push ecx // user (CUser*)
+        call packet_pc::validate_skill_use_packet
+        add esp,0x8
+        test eax,eax
+        jz drop_0x511
+
+        popad
+        mov eax,0x10
+        jmp u0x4784DB
+
+        drop_0x511:
+        popad
+        jmp u0x479155
+
+        // --- 0x50A: Item use (no target) — indagine skillcut, SOLO log, mai drop ---
+        case_0x50A:
+        pushad
+
+        push ebp // packet (GameItemUseIncoming*)
+        push ecx // user (CUser*)
+        call packet_pc::log_item_use_packet
+        add esp,0x8
+
+        popad
+        mov eax,0x9
+        jmp u0x4784DB
+
+        // --- 0x557: Item use on target — indagine skillcut, SOLO log, mai drop ---
+        case_0x557:
+        pushad
+
+        push ebp // packet (GameItemUseOnTargetIncoming*)
+        push ecx // user (CUser*)
+        call packet_pc::log_item_use_on_target_packet
+        add esp,0x8
+
+        popad
+        mov eax,0x56
+        jmp u0x4784DB
 
         // --- 0x55A: Town move scroll ---
         case_0x55A:
