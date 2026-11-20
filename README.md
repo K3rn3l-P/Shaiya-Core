@@ -1,4 +1,6 @@
-# Shaiya Core
+# Shaiya Core Fork
+
+This repository is a fork of [Shaiya Core](https://github.com/Spelunkern/Shaiya-Core).
 
 Shaiya Core is a C++ library and patching framework designed to modernize, improve, and extend Shaiya private servers through an elegant, configurable, and easy-to-maintain universal base.
 
